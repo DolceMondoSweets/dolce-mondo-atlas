@@ -138,6 +138,11 @@ def ask_claude(client: anthropic.Anthropic, system: str, user_message: str,
             system=system,
             messages=[{"role": "user", "content": user_message}],
         )
+        if message.stop_reason == "max_tokens":
+            st.warning(
+                "Atlas's response was cut off before it finished (hit the length limit). "
+                "Try again — if it keeps happening, this response type needs a higher limit."
+            )
         text = next((b.text for b in message.content if b.type == "text"), None)
         if not text:
             st.error("Claude returned no text content. Try again.")
@@ -372,7 +377,7 @@ def page_morning_brief(data: dict, client):
                 f"FINANCE SNAPSHOT:\n{finance_snapshot_str(data)}\n\n"
                 "Give me this morning's brief as JSON."
             )
-            brief = ask_claude_json(client, system, user_msg)
+            brief = ask_claude_json(client, system, user_msg, max_tokens=4000)
             if brief:
                 st.session_state.last_brief = brief
 
