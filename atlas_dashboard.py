@@ -358,20 +358,29 @@ def page_square_data(data: dict):
     st.header("Square Data")
 
     st.subheader("Live from Square API")
-    st.caption(
-        "Get these from developer.squareup.com/apps — use the PRODUCTION access "
-        "token (not sandbox) for real sales data."
-    )
-    square_token = st.text_input(
-        "Square Access Token", type="password",
-        value=st.session_state.get("square_token", ""),
-    )
-    square_location = st.text_input(
-        "Square Location ID",
-        value=st.session_state.get("square_location", ""),
-    )
-    st.session_state.square_token = square_token
-    st.session_state.square_location = square_location
+
+    secret_square_token = st.secrets.get("SQUARE_ACCESS_TOKEN", "")
+    secret_square_location = st.secrets.get("SQUARE_LOCATION_ID", "")
+
+    if secret_square_token and secret_square_location:
+        st.caption("🟧 Square credentials loaded from Secrets — no need to enter them here.")
+        square_token = secret_square_token
+        square_location = secret_square_location
+    else:
+        st.caption(
+            "Get these from developer.squareup.com/apps — use the PRODUCTION access "
+            "token (not sandbox) for real sales data."
+        )
+        square_token = st.text_input(
+            "Square Access Token", type="password",
+            value=st.session_state.get("square_token", ""),
+        )
+        square_location = st.text_input(
+            "Square Location ID",
+            value=st.session_state.get("square_location", ""),
+        )
+        st.session_state.square_token = square_token
+        st.session_state.square_location = square_location
 
     if st.button("Fetch MTD Revenue from Square", type="primary"):
         if not square_token or not square_location:
@@ -638,7 +647,10 @@ def main():
 
         st.write("💾 Data file:", "✅ found" if DATA_FILE.exists() else "ℹ️ will be created on first save")
 
-        square_connected = bool(st.session_state.get("square_token") and st.session_state.get("square_location"))
+        square_connected = bool(
+            (st.secrets.get("SQUARE_ACCESS_TOKEN", "") and st.secrets.get("SQUARE_LOCATION_ID", ""))
+            or (st.session_state.get("square_token") and st.session_state.get("square_location"))
+        )
         st.write("🟧 Square API:", "✅ configured" if square_connected else "ℹ️ not set (optional)")
 
         st.divider()
