@@ -121,7 +121,8 @@ def kb_context(selected_files: list[str] | None = None, char_limit: int = 40000)
 # ─────────────────────────────────────────────────────────────
 
 def get_client() -> anthropic.Anthropic | None:
-    api_key = st.session_state.get("api_key", "")
+    # Check Secrets first so the key persists across sessions without re-pasting.
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", "") or st.session_state.get("api_key", "")
     if api_key and api_key.startswith("sk-ant-"):
         return anthropic.Anthropic(api_key=api_key)
     return None
@@ -620,9 +621,13 @@ def main():
             st.rerun()
 
         st.header("Atlas Status")
-        api_key = st.text_input("Anthropic API Key (sk-ant-...)", type="password",
-                                 value=st.session_state.get("api_key", ""))
-        st.session_state.api_key = api_key
+        secret_key_set = bool(st.secrets.get("ANTHROPIC_API_KEY", ""))
+        if secret_key_set:
+            st.caption("🔑 Anthropic API key loaded from Secrets — no need to paste it here.")
+        else:
+            api_key = st.text_input("Anthropic API Key (sk-ant-...)", type="password",
+                                     value=st.session_state.get("api_key", ""))
+            st.session_state.api_key = api_key
         client = get_client()
         st.write("🔑 API key:", "✅ connected" if client else "❌ not set")
 
