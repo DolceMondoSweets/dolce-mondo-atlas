@@ -52,7 +52,9 @@ DEFAULT_DATA = {
     "burn": 5000.0,
     "runway": 52,
     "revenue_mtd": 0.0,
-    "decisions": [],  # list of {date, text}
+    # decisions: list of {id, date, decision, why, who, expected_outcome,
+    # actual_outcome, status}. Status is one of: "Open", "Closed".
+    "decisions": [],
 }
 
 
@@ -147,6 +149,68 @@ def ask_claude(client: anthropic.Anthropic, system: str, user_message: str,
 
 
 # ─────────────────────────────────────────────────────────────
+# SQUARE API
+# Requires a Square access token + Location ID, entered in the sidebar.
+# Get these from https://developer.squareup.com/apps — create an app,
+# use the PRODUCTION access token (not sandbox) to pull real sales data,
+# and find your Location ID under that app's Locations tab.
+# ─────────────────────────────────────────────────────────────
+
+def fetch_square_mtd_revenue(access_token: str, location_id: str) -> float | None:
+    """Sums COMPLETED order totals for the current calendar month via Square's
+    Orders Search API. Returns None (and shows an error) on failure."""
+    import requests
+
+    start_of_month = datetime.now().replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    ).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+    url = "https://connect.squareup.com/v2/orders/search"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Square-Version": "2024-10-17",
+    }
+    body = {
+        "location_ids": [location_id],
+        "query": {
+            "filter": {
+                "state_filter": {"states": ["COMPLETED"]},
+                "date_time_filter": {
+                    "closed_at": {"start_at": start_of_month}
+                },
+            }
+        },
+        "limit": 500,
+    }
+
+    try:
+        total_cents = 0
+        cursor = None
+        while True:
+            if cursor:
+                body["cursor"] = cursor
+            resp = requests.post(url, headers=headers, json=body, timeout=15)
+            if resp.status_code != 200:
+                st.error(f"Square API error ({resp.status_code}): {resp.text}")
+                return None
+            payload = resp.json()
+            for order in payload.get("orders", []):
+                total_money = order.get("total_money", {})
+                total_cents += total_money.get("amount", 0)
+            cursor = payload.get("cursor")
+            if not cursor:
+                break
+        return total_cents / 100.0
+    except requests.RequestException as e:
+        st.error(f"Could not reach Square: {e}")
+        return None
+    except Exception as e:
+        st.error(f"Unexpected error fetching Square data: {e}")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────
 # ACCESS CONTROL
 # This is a public URL, so it needs a lock on the front door before it
 # holds real cash/burn/decisions data. The password lives in Streamlit
@@ -226,7 +290,15 @@ def page_morning_brief(data: dict, client):
                 "guessing. Default to brutal honesty and execution focus.\n\n"
                 "Respond ONLY with clean plain text in exactly this format, nothing else:\n\n"
                 "Good Morning Founder.\n\n"
-                "Overall Business Health: XX/100\n"
+                "CEO Intelligence Score:\n"
+                "  Financial Health: XX/100 (or 'Not yet scoreable — no data source')\n"
+                "  Operations: XX/100 (or 'Not yet scoreable — no data source')\n"
+                "  Marketing: XX/100 (or 'Not yet scoreable — no data source')\n"
+                "  Customer: XX/100 (or 'Not yet scoreable — no data source')\n"
+                "  People: XX/100 (or 'Not yet scoreable — no data source')\n"
+                "  Growth: XX/100 (or 'Not yet scoreable — no data source')\n"
+                "  Risk: XX/100 (or 'Not yet scoreable — no data source')\n"
+                "  Overall: XX/100\n"
                 "Business Momentum: Positive / Neutral / Declining\n"
                 "Cash Runway: XXX Days\n\n"
                 "Today's Biggest Opportunity: [one clear sentence]\n"
@@ -237,9 +309,13 @@ def page_morning_brief(data: dict, client):
                 "---\n\n"
                 "Today's Top 5 Priorities\n"
                 "1. ...\n2. ...\n3. ...\n4. ...\n5. ...\n\n"
-                "The Business Health score should be your own reasoned estimate based on "
-                "the data available, not a fabricated precise calculation — treat it as a "
-                "directional signal and briefly ground it in what's driving the number."
+                "Every domain score should be your own reasoned estimate grounded in what's "
+                "actually in the business context and finance snapshot — never fabricate a "
+                "precise number for a domain with no underlying data. State 'Not yet "
+                "scoreable — no data source' for any domain that has nothing real behind it "
+                "rather than inventing a placeholder that looks like a real score. The "
+                "Overall score should reflect the average of what IS scoreable, and should "
+                "briefly note how many domains were actually scoreable."
             )
             user_msg = (
                 f"BUSINESS CONTEXT:\n{kb_context()}\n\n"
@@ -280,6 +356,43 @@ def page_finance_data(data: dict):
 def page_square_data(data: dict):
     st.header("Square Data")
 
+    st.subheader("Live from Square API")
+    st.caption(
+        "Get these from developer.squareup.com/apps — use the PRODUCTION access "
+        "token (not sandbox) for real sales data."
+    )
+    square_token = st.text_input(
+        "Square Access Token", type="password",
+        value=st.session_state.get("square_token", ""),
+    )
+    square_location = st.text_input(
+        "Square Location ID",
+        value=st.session_state.get("square_location", ""),
+    )
+    st.session_state.square_token = square_token
+    st.session_state.square_location = square_location
+
+    if st.button("Fetch MTD Revenue from Square", type="primary"):
+        if not square_token or not square_location:
+            st.error("Enter both your Square Access Token and Location ID first.")
+        else:
+            with st.spinner("Pulling this month's completed orders from Square..."):
+                total = fetch_square_mtd_revenue(square_token, square_location)
+                if total is not None:
+                    st.session_state.square_fetched_total = total
+
+    if st.session_state.get("square_fetched_total") is not None:
+        fetched = st.session_state.square_fetched_total
+        st.metric("MTD Revenue (from Square)", f"${fetched:,.2f}")
+        if st.button(f"Use ${fetched:,.2f} as MTD Revenue"):
+            data["revenue_mtd"] = fetched
+            save_data(data)
+            st.session_state.square_fetched_total = None
+            st.success("MTD Revenue updated from Square API.")
+            st.rerun()
+
+    st.divider()
+    st.subheader("Manual entry")
     revenue_mtd = st.number_input("MTD Revenue ($, manual entry)", value=float(data["revenue_mtd"]))
     if st.button("Save Manual Revenue", type="primary"):
         data["revenue_mtd"] = revenue_mtd
@@ -365,27 +478,81 @@ def page_ten_questions(data: dict, client):
 
 def page_decisions_log(data: dict):
     st.header("Decisions Log")
-    st.caption("A running record of decisions made — for you and for investors.")
+    st.caption("Executive Memory: log the decision, then come back later and close the loop on what actually happened.")
 
     with st.form("new_decision", clear_on_submit=True):
-        text = st.text_area("Log a decision", placeholder="What did you decide, and why?")
+        st.subheader("Log a new decision")
+        decision = st.text_area("Decision", placeholder="What was decided?")
+        why = st.text_area("Why", placeholder="Rationale — why this decision, why now?")
+        who = st.text_input("Who", value="Founder")
+        expected_outcome = st.text_area("Expected Outcome", placeholder="What do you expect to happen as a result?")
         submitted = st.form_submit_button("Save Decision")
-        if submitted and text.strip():
+        if submitted and decision.strip():
             data["decisions"].append({
+                "id": datetime.now().strftime("%Y%m%d%H%M%S%f"),
                 "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "text": text.strip(),
+                "decision": decision.strip(),
+                "why": why.strip(),
+                "who": who.strip() or "Founder",
+                "expected_outcome": expected_outcome.strip(),
+                "actual_outcome": "TBD",
+                "status": "Open",
             })
             save_data(data)
             st.success("Decision logged.")
 
     st.divider()
+
     if not data["decisions"]:
         st.info("No decisions logged yet.")
-    else:
-        for entry in reversed(data["decisions"]):
-            st.markdown(f"**{entry['date']}**")
-            st.write(entry["text"])
+        return
+
+    open_decisions = [d for d in data["decisions"] if d.get("status", "Open") == "Open"]
+    closed_decisions = [d for d in data["decisions"] if d.get("status", "Open") == "Closed"]
+
+    st.subheader(f"Open Decisions ({len(open_decisions)})")
+    st.caption("Come back and close these once you know what actually happened.")
+    for entry in reversed(open_decisions):
+        _render_decision(data, entry)
+
+    if closed_decisions:
+        st.divider()
+        st.subheader(f"Closed Decisions ({len(closed_decisions)})")
+        for entry in reversed(closed_decisions):
+            _render_decision(data, entry)
+
+
+def _render_decision(data: dict, entry: dict) -> None:
+    """Renders a single decision entry with an inline form to close the loop
+    (record the actual outcome and mark it resolved)."""
+    status_icon = "🟢" if entry.get("status") == "Closed" else "🟡"
+    with st.expander(f"{status_icon} {entry['date']} — {entry['decision'][:70]}"):
+        st.markdown(f"**Decision:** {entry['decision']}")
+        if entry.get("why"):
+            st.markdown(f"**Why:** {entry['why']}")
+        st.markdown(f"**Who:** {entry.get('who', 'Founder')}")
+        if entry.get("expected_outcome"):
+            st.markdown(f"**Expected Outcome:** {entry['expected_outcome']}")
+        st.markdown(f"**Actual Outcome:** {entry.get('actual_outcome', 'TBD')}")
+        st.markdown(f"**Status:** {entry.get('status', 'Open')}")
+
+        if entry.get("status") != "Closed":
             st.markdown("---")
+            with st.form(f"close_{entry['id']}"):
+                actual = st.text_area(
+                    "Record what actually happened",
+                    key=f"actual_{entry['id']}",
+                    placeholder="What was the real outcome?",
+                )
+                mark_closed = st.form_submit_button("Save Outcome & Close")
+                if mark_closed and actual.strip():
+                    for d in data["decisions"]:
+                        if d["id"] == entry["id"]:
+                            d["actual_outcome"] = actual.strip()
+                            d["status"] = "Closed"
+                    save_data(data)
+                    st.success("Outcome recorded. Decision closed.")
+                    st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -465,6 +632,9 @@ def main():
             st.caption(f"Drop your .md files into: `{KB_DIR}`")
 
         st.write("💾 Data file:", "✅ found" if DATA_FILE.exists() else "ℹ️ will be created on first save")
+
+        square_connected = bool(st.session_state.get("square_token") and st.session_state.get("square_location"))
+        st.write("🟧 Square API:", "✅ configured" if square_connected else "ℹ️ not set (optional)")
 
         st.divider()
         st.header("Navigation")
