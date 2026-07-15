@@ -51,6 +51,8 @@ Self-serve signup, billing, predictive/agent features, franchise/multi-location 
 - Persistent data input for cash, burn, revenue, key metrics
 - Executive Memory (Decisions Log) tracking decisions and outcomes
 - Basic polish: colors, mobile-friendliness, clean layout
+  - Planned upgrade: Decisions Log should capture structured fields (Why / Who / Expected Outcome / Actual Outcome / Status), not just freeform text — needed for Executive Memory to actually close the loop on decisions
+  - Planned upgrade (hold until after first week of daily use): CEO Intelligence Score broken into 7 domains (Financial, Operations, Marketing, Customer, People, Growth, Risk) plus Overall, replacing the current single overall score — only build if daily use shows the single score isn't enough
 - Reliable enough for daily operation
 - The beginning of an AI Operating System for Dolce Mondo
 
