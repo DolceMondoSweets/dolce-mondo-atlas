@@ -149,6 +149,27 @@ def ask_claude(client: anthropic.Anthropic, system: str, user_message: str,
     return None
 
 
+def ask_claude_json(client: anthropic.Anthropic, system: str, user_message: str,
+                     max_tokens: int = 2000) -> dict | None:
+    """Same as ask_claude, but parses the response as JSON. Strips markdown code
+    fences if Claude wraps the JSON in ```json ... ``` despite instructions not to."""
+    raw = ask_claude(client, system, user_message, max_tokens=max_tokens)
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```")[1]
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+        cleaned = cleaned.strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        st.error("Atlas returned a response that couldn't be parsed as structured data. Showing raw output below instead.")
+        st.text(raw)
+        return None
+
+
 # ─────────────────────────────────────────────────────────────
 # SQUARE API
 # Requires a Square access token + Location ID, entered in the sidebar.
@@ -253,6 +274,31 @@ def safe_markdown(text: str) -> None:
     st.markdown(text.replace("$", "\\$"))
 
 
+def score_color(score) -> str:
+    """Red/orange/green banding for a 0-100 score. Gray for missing data."""
+    if score is None:
+        return "#9e9e9e"
+    if score < 40:
+        return "#e74c3c"
+    if score < 70:
+        return "#f39c12"
+    return "#27ae60"
+
+
+def runway_color(days) -> str:
+    if days is None:
+        return "#9e9e9e"
+    if days < 30:
+        return "#e74c3c"
+    if days < 60:
+        return "#f39c12"
+    return "#27ae60"
+
+
+def momentum_color(momentum: str) -> str:
+    return {"Positive": "#27ae60", "Neutral": "#f39c12", "Declining": "#e74c3c"}.get(momentum, "#9e9e9e")
+
+
 def finance_snapshot_str(data: dict) -> str:
 
     return (
@@ -267,6 +313,9 @@ def finance_snapshot_str(data: dict) -> str:
 # ─────────────────────────────────────────────────────────────
 # PAGE: Morning Brief
 # ─────────────────────────────────────────────────────────────
+
+DOMAIN_ORDER = ["Financial Health", "Operations", "Marketing", "Customer", "People", "Growth", "Risk"]
+
 
 def page_morning_brief(data: dict, client):
     st.header("Good Morning, Founder")
@@ -289,46 +338,189 @@ def page_morning_brief(data: dict, client):
                 "business — use only what's in the business context and finance snapshot "
                 "provided. Where data is genuinely missing, say so plainly rather than "
                 "guessing. Default to brutal honesty and execution focus.\n\n"
-                "Respond ONLY with clean plain text in exactly this format, nothing else:\n\n"
-                "Good Morning Founder.\n\n"
-                "CEO Intelligence Score:\n"
-                "  Financial Health: XX/100 (or 'Not yet scoreable — no data source')\n"
-                "  Operations: XX/100 (or 'Not yet scoreable — no data source')\n"
-                "  Marketing: XX/100 (or 'Not yet scoreable — no data source')\n"
-                "  Customer: XX/100 (or 'Not yet scoreable — no data source')\n"
-                "  People: XX/100 (or 'Not yet scoreable — no data source')\n"
-                "  Growth: XX/100 (or 'Not yet scoreable — no data source')\n"
-                "  Risk: XX/100 (or 'Not yet scoreable — no data source')\n"
-                "  Overall: XX/100\n"
-                "Business Momentum: Positive / Neutral / Declining\n"
-                "Cash Runway: XXX Days\n\n"
-                "Today's Biggest Opportunity: [one clear sentence]\n"
-                "Potential Impact: [quantified if possible]\n\n"
-                "Biggest Risk: [one clear sentence]\n\n"
-                "Recommended Focus: [one clear action for today]\n\n"
-                "Everything else is on track. [or a short list of issues]\n\n"
-                "---\n\n"
-                "Today's Top 5 Priorities\n"
-                "1. ...\n2. ...\n3. ...\n4. ...\n5. ...\n\n"
-                "Every domain score should be your own reasoned estimate grounded in what's "
+                "Respond ONLY with valid JSON, no markdown code fences, no commentary "
+                "before or after — just the raw JSON object, matching exactly this shape:\n\n"
+                "{\n"
+                '  "momentum": "Positive" | "Neutral" | "Declining",\n'
+                '  "cash_runway_days": <integer or null>,\n'
+                '  "domain_scores": {\n'
+                '    "Financial Health": {"score": <0-100 or null>, "note": "<reason if null, else empty string>"},\n'
+                '    "Operations": {"score": <0-100 or null>, "note": "..."},\n'
+                '    "Marketing": {"score": <0-100 or null>, "note": "..."},\n'
+                '    "Customer": {"score": <0-100 or null>, "note": "..."},\n'
+                '    "People": {"score": <0-100 or null>, "note": "..."},\n'
+                '    "Growth": {"score": <0-100 or null>, "note": "..."},\n'
+                '    "Risk": {"score": <0-100 or null>, "note": "..."}\n'
+                "  },\n"
+                '  "overall_score": <0-100 or null>,\n'
+                '  "overall_note": "<e.g. average of N scoreable domains>",\n'
+                '  "biggest_opportunity": "<one clear sentence>",\n'
+                '  "potential_impact": "<quantified if possible>",\n'
+                '  "biggest_risk": "<one clear sentence>",\n'
+                '  "recommended_focus": "<one clear action for today>",\n'
+                '  "flagged_issues": ["<short issue>", "..."],\n'
+                '  "top_priorities": ["<priority 1>", "<priority 2>", "<priority 3>", "<priority 4>", "<priority 5>"]\n'
+                "}\n\n"
+                "Every domain score must be your own reasoned estimate grounded in what's "
                 "actually in the business context and finance snapshot — never fabricate a "
-                "precise number for a domain with no underlying data. State 'Not yet "
-                "scoreable — no data source' for any domain that has nothing real behind it "
-                "rather than inventing a placeholder that looks like a real score. The "
-                "Overall score should reflect the average of what IS scoreable, and should "
-                "briefly note how many domains were actually scoreable."
+                "precise number for a domain with no underlying data; use null with a note "
+                "instead. overall_score should reflect only the average of domains that ARE "
+                "scoreable. flagged_issues can be an empty list if nothing needs flagging."
             )
             user_msg = (
                 f"BUSINESS CONTEXT:\n{kb_context()}\n\n"
                 f"FINANCE SNAPSHOT:\n{finance_snapshot_str(data)}\n\n"
-                "Give me this morning's brief."
+                "Give me this morning's brief as JSON."
             )
-            brief = ask_claude(client, system, user_msg)
+            brief = ask_claude_json(client, system, user_msg)
             if brief:
-                st.markdown("### Atlas Morning Brief")
-                safe_markdown(brief)
+                st.session_state.last_brief = brief
+
+    if st.session_state.get("last_brief"):
+        render_morning_brief(st.session_state.last_brief)
     else:
         st.info("Click the button to generate a fresh brief.")
+
+
+def render_morning_brief(brief: dict) -> None:
+    st.markdown("### Atlas Morning Brief")
+
+    # ── Top row: Overall score, Momentum, Cash Runway ──────────────────
+    overall = brief.get("overall_score")
+    momentum = brief.get("momentum", "Neutral")
+    runway = brief.get("cash_runway_days")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        color = score_color(overall)
+        overall_display = f"{overall}/100" if overall is not None else "N/A"
+        st.markdown(
+            f"<div style='text-align:center'><div style='font-size:14px;color:#888'>OVERALL SCORE</div>"
+            f"<div style='font-size:40px;font-weight:700;color:{color}'>{overall_display}</div></div>",
+            unsafe_allow_html=True,
+        )
+    with c2:
+        color = momentum_color(momentum)
+        st.markdown(
+            f"<div style='text-align:center'><div style='font-size:14px;color:#888'>MOMENTUM</div>"
+            f"<div style='font-size:28px;font-weight:700;color:{color};margin-top:8px'>{momentum}</div></div>",
+            unsafe_allow_html=True,
+        )
+    with c3:
+        color = runway_color(runway)
+        runway_display = f"{runway} days" if runway is not None else "Unknown"
+        st.markdown(
+            f"<div style='text-align:center'><div style='font-size:14px;color:#888'>CASH RUNWAY</div>"
+            f"<div style='font-size:28px;font-weight:700;color:{color};margin-top:8px'>{runway_display}</div></div>",
+            unsafe_allow_html=True,
+        )
+
+    if brief.get("overall_note"):
+        st.caption(brief["overall_note"])
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── CEO Intelligence Score bar chart ────────────────────────────────
+    st.markdown("**CEO Intelligence Score by Domain**")
+    domain_scores = brief.get("domain_scores", {})
+    scored_rows, unscored_labels = [], []
+    for domain in DOMAIN_ORDER:
+        entry = domain_scores.get(domain, {})
+        score = entry.get("score")
+        if score is not None:
+            scored_rows.append({"Domain": domain, "Score": score})
+        else:
+            unscored_labels.append(domain)
+
+    if scored_rows:
+        try:
+            import altair as alt
+            df = pd.DataFrame(scored_rows)
+            chart = (
+                alt.Chart(df)
+                .mark_bar(cornerRadius=4)
+                .encode(
+                    x=alt.X("Score:Q", scale=alt.Scale(domain=[0, 100]), title=None),
+                    y=alt.Y("Domain:N", sort=DOMAIN_ORDER, title=None),
+                    color=alt.Color(
+                        "Score:Q",
+                        scale=alt.Scale(domain=[0, 40, 70, 100], range=["#e74c3c", "#e74c3c", "#f39c12", "#27ae60"]),
+                        legend=None,
+                    ),
+                    tooltip=["Domain", "Score"],
+                )
+                .properties(height=32 * len(scored_rows))
+            )
+            st.altair_chart(chart, use_container_width=True)
+        except Exception:
+            for row in scored_rows:
+                st.write(f"{row['Domain']}: {row['Score']}/100")
+
+    if unscored_labels:
+        st.caption(f"Not yet scoreable (no data source): {', '.join(unscored_labels)}")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Opportunity / Risk side by side ─────────────────────────────────
+    oc, rc = st.columns(2)
+    with oc:
+        st.markdown(
+            f"<div style='background:#eafaf1;border-left:5px solid #27ae60;padding:14px;border-radius:6px;height:100%'>"
+            f"<div style='font-weight:700;color:#1e8449;margin-bottom:6px'>🟢 Today's Biggest Opportunity</div>"
+            f"<div>{_esc(brief.get('biggest_opportunity', '—'))}</div>"
+            f"<div style='margin-top:8px;font-style:italic;color:#555'>{_esc(brief.get('potential_impact', ''))}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    with rc:
+        st.markdown(
+            f"<div style='background:#fdecea;border-left:5px solid #e74c3c;padding:14px;border-radius:6px;height:100%'>"
+            f"<div style='font-weight:700;color:#c0392b;margin-bottom:6px'>🔴 Biggest Risk</div>"
+            f"<div>{_esc(brief.get('biggest_risk', '—'))}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Recommended focus ────────────────────────────────────────────────
+    st.markdown(
+        f"<div style='background:#fef5e7;border-left:5px solid #f39c12;padding:14px;border-radius:6px'>"
+        f"<div style='font-weight:700;color:#b9770e;margin-bottom:6px'>🎯 Recommended Focus</div>"
+        f"<div>{_esc(brief.get('recommended_focus', '—'))}</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Flagged issues ───────────────────────────────────────────────────
+    issues = brief.get("flagged_issues") or []
+    if issues:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("**⚠️ Flagged Issues**")
+        for issue in issues:
+            st.markdown(f"- {_esc(issue)}")
+    else:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.success("Everything else is on track.")
+
+    # ── Top 5 priorities ─────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("**Today's Top 5 Priorities**")
+    for i, p in enumerate(brief.get("top_priorities", []), 1):
+        st.markdown(f"{i}. {_esc(p)}")
+
+
+def _esc(text: str) -> str:
+    """Escape $ (LaTeX trap) and basic HTML chars for safe display inside
+    the custom HTML blocks used in the Morning Brief."""
+    if not text:
+        return ""
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("$", "&#36;")
+    )
 
 
 # ─────────────────────────────────────────────────────────────
