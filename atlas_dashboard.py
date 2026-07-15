@@ -502,17 +502,36 @@ def render_morning_brief(brief: dict) -> None:
     if issues:
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("**⚠️ Flagged Issues**")
-        for issue in issues:
-            st.markdown(f"- {_esc(issue)}")
+        rows = "".join(
+            f"<div style='display:flex;align-items:center;background:#fff8e1;"
+            f"border-left:4px solid #f39c12;border-radius:6px;padding:10px 14px;"
+            f"margin-bottom:8px'>"
+            f"<span style='color:#f39c12;font-size:18px;margin-right:10px'>⚠</span>"
+            f"<span>{_esc(issue)}</span></div>"
+            for issue in issues
+        )
+        st.markdown(rows, unsafe_allow_html=True)
     else:
         st.markdown("<br>", unsafe_allow_html=True)
         st.success("Everything else is on track.")
 
     # ── Top 5 priorities ─────────────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("**Today's Top 5 Priorities**")
+    st.markdown("**🎯 Today's Top 5 Priorities**")
+    priority_colors = ["#c0392b", "#e67e22", "#f1c40f", "#2980b9", "#8e44ad"]
+    rows = ""
     for i, p in enumerate(brief.get("top_priorities", []), 1):
-        st.markdown(f"{i}. {_esc(p)}")
+        badge_color = priority_colors[(i - 1) % len(priority_colors)]
+        rows += (
+            f"<div style='display:flex;align-items:center;background:#f8f9fa;"
+            f"border-radius:8px;padding:12px 16px;margin-bottom:10px;"
+            f"box-shadow:0 1px 2px rgba(0,0,0,0.06)'>"
+            f"<div style='min-width:32px;height:32px;border-radius:50%;background:{badge_color};"
+            f"color:white;display:flex;align-items:center;justify-content:center;"
+            f"font-weight:700;margin-right:14px;flex-shrink:0'>{i}</div>"
+            f"<div>{_esc(p)}</div></div>"
+        )
+    st.markdown(rows, unsafe_allow_html=True)
 
 
 def _esc(text: str) -> str:
