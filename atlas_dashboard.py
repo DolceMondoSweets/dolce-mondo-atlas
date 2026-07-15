@@ -26,16 +26,16 @@ DATA_FILE = Path(__file__).parent / "atlas_data.json"
 KB_DIR = Path(__file__).parent / "knowledge_base"
 
 TEN_QUESTIONS = [
-    "What is my cash position and how many days of runway do I have?",
-    "What changed in revenue or sales since yesterday/last week?",
-    "What is the single highest-leverage task I should do today?",
-    "What decisions are waiting on me, and what happens if I delay them?",
-    "What risk (permitting, cash, ops, reputation) is most urgent right now?",
-    "What did the customer/market tell me recently that I haven't acted on?",
-    "What is the status of the H-E-B micro-café reopening?",
-    "What is the status of fundraising / investor conversations?",
-    "What marketing or ecommerce action would move the needle this week?",
-    "What should I NOT spend time on today?",
+    "Am I making money?",
+    "Am I running out of money?",
+    "Are sales growing?",
+    "Are customers happy?",
+    "Are operations healthy?",
+    "Is my team performing?",
+    "Are we executing our goals?",
+    "What risks are coming?",
+    "What opportunities am I missing?",
+    "What should I do today?",
 ]
 
 # ─────────────────────────────────────────────────────────────
@@ -212,13 +212,27 @@ def page_morning_brief(data: dict, client):
             return
         with st.spinner("Asking Claude..."):
             system = (
-                "You are Atlas, the AI operating system for Dolce Mondo, a Houston-based "
-                "coffee, beverage, and sweets brand. Respond ONLY with clean plain text in "
-                "a Morning Brief format: start with 'Good Morning', then short sections for "
-                "Finance, Priorities, and Risks. Base finance commentary strictly on the "
-                "numbers provided — never invent figures. Use the business context below "
-                "for tone and priorities, but only state facts that are supported by it "
-                "or by the finance snapshot."
+                "You are Atlas, the AI Operating System for Dolce Mondo, a Houston-based "
+                "coffee, beverage, and sweets brand. Never hallucinate facts about the "
+                "business — use only what's in the business context and finance snapshot "
+                "provided. Where data is genuinely missing, say so plainly rather than "
+                "guessing. Default to brutal honesty and execution focus.\n\n"
+                "Respond ONLY with clean plain text in exactly this format, nothing else:\n\n"
+                "Good Morning Founder.\n\n"
+                "Overall Business Health: XX/100\n"
+                "Business Momentum: Positive / Neutral / Declining\n"
+                "Cash Runway: XXX Days\n\n"
+                "Today's Biggest Opportunity: [one clear sentence]\n"
+                "Potential Impact: [quantified if possible]\n\n"
+                "Biggest Risk: [one clear sentence]\n\n"
+                "Recommended Focus: [one clear action for today]\n\n"
+                "Everything else is on track. [or a short list of issues]\n\n"
+                "---\n\n"
+                "Today's Top 5 Priorities\n"
+                "1. ...\n2. ...\n3. ...\n4. ...\n5. ...\n\n"
+                "The Business Health score should be your own reasoned estimate based on "
+                "the data available, not a fabricated precise calculation — treat it as a "
+                "directional signal and briefly ground it in what's driving the number."
             )
             user_msg = (
                 f"BUSINESS CONTEXT:\n{kb_context()}\n\n"
@@ -320,10 +334,12 @@ def page_ten_questions(data: dict, client):
             return
         with st.spinner("Thinking through today..."):
             system = (
-                "You are Atlas, the AI operating system for Dolce Mondo. Answer each of "
-                "the 10 questions concisely (2-4 sentences each), numbered to match. "
-                "Where the answer depends on facts not in your context, say so plainly "
-                "instead of guessing. Use the business context and finance snapshot given."
+                "You are Atlas, the AI Operating System for Dolce Mondo. Never hallucinate "
+                "facts about the business — use only the business context and finance "
+                "snapshot provided. Answer each of the 10 questions concisely (2-4 "
+                "sentences each), numbered to match. Where the answer depends on facts not "
+                "in your context, say so plainly instead of guessing. Default to brutal "
+                "honesty and execution focus, consistent with how Atlas is meant to operate."
             )
             questions_block = "\n".join(f"{i}. {q}" for i, q in enumerate(TEN_QUESTIONS, 1))
             user_msg = (
