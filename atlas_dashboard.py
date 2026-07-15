@@ -181,6 +181,13 @@ def check_password() -> bool:
     return False
 
 
+def safe_markdown(text: str) -> None:
+    """st.markdown treats text between two $ signs as LaTeX math, which garbles
+    dollar amounts (e.g. "$70K...$11.6K" gets rendered as an equation). Escaping
+    every $ prevents that without changing anything else about the formatting."""
+    st.markdown(text.replace("$", "\\$"))
+
+
 def finance_snapshot_str(data: dict) -> str:
 
     return (
@@ -242,7 +249,7 @@ def page_morning_brief(data: dict, client):
             brief = ask_claude(client, system, user_msg)
             if brief:
                 st.markdown("### Atlas Morning Brief")
-                st.markdown(brief)
+                safe_markdown(brief)
     else:
         st.info("Click the button to generate a fresh brief.")
 
@@ -349,7 +356,7 @@ def page_ten_questions(data: dict, client):
             )
             answers = ask_claude(client, system, user_msg, max_tokens=2500)
             if answers:
-                st.markdown(answers)
+                safe_markdown(answers)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -393,7 +400,7 @@ def page_chat(data: dict, client):
 
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+            safe_markdown(msg["content"])
 
     prompt = st.chat_input("Ask Atlas anything about the business...")
     if prompt:
@@ -419,7 +426,7 @@ def page_chat(data: dict, client):
                 )
                 reply = ask_claude(client, system, user_msg)
                 if reply:
-                    st.markdown(reply)
+                    safe_markdown(reply)
                     st.session_state.chat_history.append({"role": "assistant", "content": reply})
 
 
