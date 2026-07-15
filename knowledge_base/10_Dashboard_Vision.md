@@ -32,7 +32,7 @@ Stable daily-use dashboard. Finance + Square data collection (manual/CSV first).
 **Explicitly deferred:** multi-user/auth, predictive analytics, bank integration, any multi-tenant code.
 
 ### Phase 2 — Remove manual data entry
-Square API integration (real-time, not CSV). Possibly bank read-only (Plaid) if Square alone doesn't cover it. This is the one piece of "medium-term" pulled forward, because it's the actual daily friction the founder pays right now — and it's infrastructure a second business would need too, so the effort isn't wasted later.
+Square API integration — **shipped 2026-07-15** (live MTD revenue pull via Square Orders Search API, alongside manual/CSV fallback), pulled forward from its original phase per founder's decision to keep building without waiting. Possibly bank read-only (Plaid) still pending if Square alone doesn't cover it.
 
 ### Phase 3 — Generalize the data model
 The real unlock for SaaS. Today "cash," "burn," "Square revenue" are hardcoded to Dolce Mondo's shape. This phase redesigns the data model so "business type → relevant metrics" is configurable. Done deliberately, once Phase 1 is stable — not guessed at in advance.
@@ -51,8 +51,8 @@ Self-serve signup, billing, predictive/agent features, franchise/multi-location 
 - Persistent data input for cash, burn, revenue, key metrics
 - Executive Memory (Decisions Log) tracking decisions and outcomes
 - Basic polish: colors, mobile-friendliness, clean layout
-  - Planned upgrade: Decisions Log should capture structured fields (Why / Who / Expected Outcome / Actual Outcome / Status), not just freeform text — needed for Executive Memory to actually close the loop on decisions
-  - Planned upgrade (hold until after first week of daily use): CEO Intelligence Score broken into 7 domains (Financial, Operations, Marketing, Customer, People, Growth, Risk) plus Overall, replacing the current single overall score — only build if daily use shows the single score isn't enough
+  - Shipped 2026-07-15: Decisions Log now captures structured fields (Why / Who / Expected Outcome / Actual Outcome / Status) with the ability to close the loop on open decisions
+  - Shipped 2026-07-15: CEO Intelligence Score broken into 7 domains (Financial, Operations, Marketing, Customer, People, Growth, Risk) plus Overall — built ahead of the original "wait for a week of use" plan, per founder's explicit call based on 25 years of business experience
 - Reliable enough for daily operation
 - The beginning of an AI Operating System for Dolce Mondo
 
