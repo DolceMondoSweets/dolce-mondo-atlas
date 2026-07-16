@@ -28,7 +28,7 @@ Regardless of how far the platform grows, Atlas always:
 ## 3. The Roadmap (Shortest Path, Nothing Skipped That Shouldn't Be)
 
 ### Phase 1 — Prove it on Dolce Mondo (now → ~3 months)
-Stable daily-use dashboard. Finance + Square data collection (manual/CSV first). Morning Brief and 10 Questions running reliably. Decisions Log in real use. Basic polish and mobile-friendliness. This phase is done when the founder is actually opening Atlas every day and it's changing what he does — not when the code is "feature complete."
+Stable daily-use dashboard. Finance + Square data collection (manual/CSV first). Morning Brief and Vital Signs (the 10 core questions) running reliably. Decisions Log in real use. Basic polish and mobile-friendliness. This phase is done when the founder is actually opening Atlas every day and it's changing what he does — not when the code is "feature complete."
 **Explicitly deferred:** multi-user/auth, predictive analytics, bank integration, any multi-tenant code.
 
 ### Phase 2 — Remove manual data entry
