@@ -282,9 +282,10 @@ def check_password() -> bool:
 def speak_button(text: str, label: str = "🔊 Read Aloud") -> None:
     """Renders a button that reads the given text aloud using the browser's
     built-in speech synthesis — free, no API call, works in Chrome/Edge/Safari.
-    Uses st.components.v1.html (not st.markdown) because Streamlit strips
-    onclick/JS from st.markdown even with unsafe_allow_html=True — components.html
-    is the actual supported way to run real interactive JS in Streamlit."""
+    Uses st.html (injects directly into the page, no iframe) rather than
+    components.html, since components.html's sandboxed iframe appears to block
+    speechSynthesis output in some browsers. st.markdown won't work either,
+    since Streamlit strips onclick/JS from markdown even with unsafe_allow_html."""
     if not text:
         return
     safe_text = json.dumps(text)
@@ -295,7 +296,7 @@ def speak_button(text: str, label: str = "🔊 Read Aloud") -> None:
         style='background:#2c3e50;color:white;border:none;border-radius:6px;
         padding:8px 16px;cursor:pointer;font-size:14px;font-family:sans-serif;'>{label}</button>
     """
-    components.html(html, height=45)
+    st.html(html)
 
 
 def stop_speaking_button() -> None:
@@ -304,7 +305,7 @@ def stop_speaking_button() -> None:
         style='background:#95a5a6;color:white;border:none;border-radius:6px;
         padding:8px 16px;cursor:pointer;font-size:14px;font-family:sans-serif;'>⏹ Stop</button>
     """
-    components.html(html, height=45)
+    st.html(html)
 
 
 def brief_narration(brief: dict) -> str:
