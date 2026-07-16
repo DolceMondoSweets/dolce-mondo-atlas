@@ -63,6 +63,10 @@ DEFAULT_DATA = {
     # decisions: list of {id, date, decision, why, who, expected_outcome,
     # actual_outcome, status}. Status is one of: "Open", "Closed".
     "decisions": [],
+    # brief_history: list of {date, overall_score, momentum, cash_runway_days,
+    # revenue_mtd}. One entry appended each time a Morning Brief is generated —
+    # this is what makes "momentum" a real trend instead of a single-snapshot guess.
+    "brief_history": [],
 }
 
 
@@ -372,6 +376,42 @@ def momentum_color(momentum: str) -> str:
     return {"Positive": "#27ae60", "Neutral": "#f39c12", "Declining": "#e74c3c"}.get(momentum, "#9e9e9e")
 
 
+def trend_history_str(data: dict, limit: int = 14) -> str:
+    history = data.get("brief_history", [])[-limit:]
+    if not history:
+        return "No prior briefs recorded yet — this is the first."
+    lines = []
+    for h in history:
+        lines.append(
+            f"{h.get('date')}: Overall {h.get('overall_score')}/100, "
+            f"Momentum {h.get('momentum')}, Runway {h.get('cash_runway_days')} days, "
+            f"MTD Revenue ${h.get('revenue_mtd', 0):,.2f}"
+        )
+    return "\n".join(lines)
+
+
+def record_brief_history(data: dict, brief: dict) -> None:
+    """Appends today's brief scores to brief_history for trend tracking. If a
+    brief was already generated today, updates that entry instead of creating
+    a duplicate (so regenerating mid-day doesn't pollute the trend)."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    entry = {
+        "date": today,
+        "overall_score": brief.get("overall_score"),
+        "momentum": brief.get("momentum"),
+        "cash_runway_days": brief.get("cash_runway_days"),
+        "revenue_mtd": data.get("revenue_mtd"),
+    }
+    history = data.setdefault("brief_history", [])
+    for i, existing in enumerate(history):
+        if existing.get("date") == today:
+            history[i] = entry
+            break
+    else:
+        history.append(entry)
+    save_data(data)
+
+
 def finance_snapshot_str(data: dict) -> str:
 
     return (
@@ -443,19 +483,24 @@ def page_morning_brief(data: dict, client):
             user_msg = (
                 f"BUSINESS CONTEXT:\n{kb_context()}\n\n"
                 f"FINANCE SNAPSHOT:\n{finance_snapshot_str(data)}\n\n"
-                "Give me this morning's brief as JSON."
+                f"RECENT TREND (previous briefs, oldest to newest):\n{trend_history_str(data)}\n\n"
+                "Give me this morning's brief as JSON. Base 'momentum' on the actual "
+                "trend above where history exists (e.g. score/runway moving up or down "
+                "across entries) rather than a guess from today's snapshot alone. If "
+                "there's no meaningful history yet, say so is fine — don't fabricate a trend."
             )
             brief = ask_claude_json(client, system, user_msg, max_tokens=4000)
             if brief:
                 st.session_state.last_brief = brief
+                record_brief_history(data, brief)
 
     if st.session_state.get("last_brief"):
-        render_morning_brief(st.session_state.last_brief)
+        render_morning_brief(st.session_state.last_brief, data)
     else:
         st.info("Click the button to generate a fresh brief.")
 
 
-def render_morning_brief(brief: dict) -> None:
+def render_morning_brief(brief: dict, data: dict) -> None:
     st.markdown("### Atlas Morning Brief")
     sc1, sc2 = st.columns([1, 1])
     with sc1:
@@ -605,6 +650,32 @@ def render_morning_brief(brief: dict) -> None:
             f"<div>{_esc(p)}</div></div>"
         )
     st.markdown(rows, unsafe_allow_html=True)
+
+    # ── Trend over time ──────────────────────────────────────────────────
+    history = data.get("brief_history", [])
+    scored_history = [h for h in history if h.get("overall_score") is not None]
+    if len(scored_history) >= 2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("**📈 Overall Score Trend**")
+        try:
+            import altair as alt
+            df = pd.DataFrame(scored_history)
+            df["date"] = pd.to_datetime(df["date"])
+            chart = (
+                alt.Chart(df)
+                .mark_line(point=True, color="#2980b9")
+                .encode(
+                    x=alt.X("date:T", title=None),
+                    y=alt.Y("overall_score:Q", title="Overall Score", scale=alt.Scale(domain=[0, 100])),
+                    tooltip=["date:T", "overall_score:Q", "momentum:N"],
+                )
+                .properties(height=200)
+            )
+            st.altair_chart(chart, use_container_width=True)
+        except Exception:
+            pass
+    elif len(scored_history) == 1:
+        st.caption("📈 Trend chart will appear once you have at least two days of Morning Briefs.")
 
 
 def _esc(text: str) -> str:
@@ -792,6 +863,9 @@ def page_ten_questions(data: dict, client):
             result = ask_claude_json(client, system, user_msg, max_tokens=3000)
             if result:
                 st.session_state.last_ten_questions = result
+                for k in list(st.session_state.keys()):
+                    if k.startswith("tq_expand_"):
+                        del st.session_state[k]
 
     if st.session_state.get("last_ten_questions"):
         render_ten_questions(st.session_state.last_ten_questions)
@@ -800,19 +874,36 @@ def page_ten_questions(data: dict, client):
 def render_ten_questions(result: dict) -> None:
     st.markdown("<br>", unsafe_allow_html=True)
     answers = result.get("answers", [])
-    for a in answers:
+    for i, a in enumerate(answers):
         style = STATUS_STYLE.get(a.get("status", "unknown"), STATUS_STYLE["unknown"])
+        expand_key = f"tq_expand_{i}"
+        if expand_key not in st.session_state:
+            st.session_state[expand_key] = False
+        expanded = st.session_state[expand_key]
+
+        detail_html = (
+            f"<div style='margin-top:10px;padding-top:10px;border-top:1px solid rgba(0,0,0,0.08);"
+            f"color:#444'>{_esc(a.get('detail', ''))}</div>"
+            if expanded else ""
+        )
         st.markdown(
             f"<div style='background:{style['bg']};border-left:5px solid {style['color']};"
-            f"border-radius:6px;padding:14px 16px;margin-bottom:12px'>"
-            f"<div style='display:flex;align-items:center;justify-content:space-between'>"
+            f"border-radius:6px;padding:12px 16px 8px 16px;margin-bottom:4px'>"
+            f"<div style='display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap'>"
             f"<div style='font-weight:700'>{style['icon']} {_esc(a.get('question', ''))}</div>"
             f"<div style='font-weight:700;color:{style['color']}'>{_esc(a.get('verdict', ''))}</div>"
             f"</div>"
-            f"<div style='margin-top:6px;color:#444'>{_esc(a.get('detail', ''))}</div>"
+            f"{detail_html}"
             f"</div>",
             unsafe_allow_html=True,
         )
+        _, btn_col = st.columns([5, 1])
+        with btn_col:
+            btn_label = "Show Less ▴" if expanded else "Read More ▾"
+            if st.button(btn_label, key=f"tq_btn_{i}", use_container_width=True):
+                st.session_state[expand_key] = not expanded
+                st.rerun()
+        st.markdown("<div style='margin-bottom:8px'></div>", unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -999,6 +1090,43 @@ def page_chat(data: dict, client):
 # MAIN
 # ─────────────────────────────────────────────────────────────
 
+def render_backup_restore(data: dict) -> None:
+    """Streamlit Cloud's disk isn't guaranteed to survive redeploys/reboots, so
+    this gives the founder a manual, reliable way to save and restore all
+    Atlas data (finance, decisions, everything in atlas_data.json) independent
+    of the app's own storage."""
+    st.header("💾 Backup & Restore")
+
+    backup_json = json.dumps(data, indent=2)
+    st.download_button(
+        "⬇️ Download Backup",
+        data=backup_json,
+        file_name=f"atlas_backup_{datetime.now().strftime('%Y-%m-%d')}.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+    st.caption("Do this regularly — especially after logging decisions or updating finance numbers.")
+
+    with st.expander("Restore from a backup file"):
+        st.caption("⚠️ This will overwrite all current data (finance, decisions, everything) with the uploaded backup.")
+        uploaded = st.file_uploader("Choose a backup .json file", type=["json"], key="restore_uploader")
+        if uploaded is not None:
+            try:
+                restored = json.load(uploaded)
+                if not isinstance(restored, dict) or "cash" not in restored:
+                    st.error("This doesn't look like a valid Atlas backup file.")
+                else:
+                    if st.button("Confirm Restore (overwrites current data)", type="primary"):
+                        for k, v in DEFAULT_DATA.items():
+                            restored.setdefault(k, v)
+                        st.session_state.data = restored
+                        save_data(restored)
+                        st.success("Restored successfully.")
+                        st.rerun()
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                st.error("Couldn't read that file — make sure it's a valid Atlas backup .json.")
+
+
 def main():
     st.set_page_config(page_title=f"{APP_TITLE} — Dolce Mondo", layout="centered")
 
@@ -1040,6 +1168,9 @@ def main():
             or (st.session_state.get("square_token") and st.session_state.get("square_location"))
         )
         st.write("🟧 Square API:", "✅ configured" if square_connected else "ℹ️ not set (optional)")
+
+        st.divider()
+        render_backup_restore(data)
 
         st.divider()
         st.header("Navigation")
