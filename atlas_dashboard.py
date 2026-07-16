@@ -285,24 +285,23 @@ def speak_button(text: str, label: str = "🔊 Read Aloud") -> None:
     the browser without triggering a Streamlit rerun."""
     if not text:
         return
-    safe_text = json.dumps(text)
-    st.markdown(
-        f"""<button onclick='window.speechSynthesis.cancel();
+    # Encode as JSON for JS, then neutralize literal $ characters so Streamlit's
+    # markdown parser can't mistake them for LaTeX math delimiters mid-attribute.
+    # \u0024 is interpreted by JS as "$" at runtime, so the spoken text is unaffected.
+    safe_text = json.dumps(text).replace("$", "\\u0024")
+    html = f"""<button onclick='window.speechSynthesis.cancel();
         var u = new SpeechSynthesisUtterance({safe_text});
         window.speechSynthesis.speak(u);'
         style='background:#2c3e50;color:white;border:none;border-radius:6px;
-        padding:8px 16px;cursor:pointer;font-size:14px;margin:4px 0'>{label}</button>""",
-        unsafe_allow_html=True,
-    )
+        padding:8px 16px;cursor:pointer;font-size:14px;margin:4px 0'>{label}</button>"""
+    st.markdown(_compact_html(html), unsafe_allow_html=True)
 
 
 def stop_speaking_button() -> None:
-    st.markdown(
-        """<button onclick='window.speechSynthesis.cancel();'
+    html = """<button onclick='window.speechSynthesis.cancel();'
         style='background:#95a5a6;color:white;border:none;border-radius:6px;
-        padding:8px 16px;cursor:pointer;font-size:14px;margin:4px 0'>⏹ Stop</button>""",
-        unsafe_allow_html=True,
-    )
+        padding:8px 16px;cursor:pointer;font-size:14px;margin:4px 0'>⏹ Stop</button>"""
+    st.markdown(_compact_html(html), unsafe_allow_html=True)
 
 
 def brief_narration(brief: dict) -> str:
@@ -327,6 +326,14 @@ def safe_markdown(text: str) -> None:
     dollar amounts (e.g. "$70K...$11.6K" gets rendered as an equation). Escaping
     every $ prevents that without changing anything else about the formatting."""
     st.markdown(text.replace("$", "\\$"))
+
+
+def _compact_html(html: str) -> str:
+    """Collapses a multi-line, indented HTML string into a single line.
+    Markdown treats 4+ spaces of leading indentation as a code block, so any
+    multi-line f-string HTML passed to st.markdown must be flattened first or
+    it renders as literal text instead of an actual button/div."""
+    return " ".join(line.strip() for line in html.strip().splitlines())
 
 
 def score_color(score) -> str:
@@ -866,7 +873,7 @@ def _render_decision(data: dict, entry: dict) -> None:
                 background:{color};color:white;font-size:12px;font-weight:700'>{entry.get('status', 'Open').upper()}</div>
         </div>
         """
-        st.markdown(rows, unsafe_allow_html=True)
+        st.markdown(_compact_html(rows), unsafe_allow_html=True)
 
         if not is_closed:
             st.markdown("<br>", unsafe_allow_html=True)
