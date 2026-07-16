@@ -67,6 +67,9 @@ DEFAULT_DATA = {
     # revenue_mtd}. One entry appended each time a Morning Brief is generated —
     # this is what makes "momentum" a real trend instead of a single-snapshot guess.
     "brief_history": [],
+    # marketing_drafts: list of {id, date, content_type, topic, content} —
+    # saved copy from the Content Studio for reuse later.
+    "marketing_drafts": [],
 }
 
 
@@ -1090,6 +1093,105 @@ def page_chat(data: dict, client):
 # MAIN
 # ─────────────────────────────────────────────────────────────
 
+CONTENT_TYPES = [
+    "Social Media Post",
+    "Email Campaign",
+    "SMS Message",
+    "Product Description",
+    "Promotional Announcement",
+    "Blog / SEO Article",
+]
+
+SOCIAL_PLATFORMS = ["Instagram", "Facebook", "TikTok", "X (Twitter)", "YouTube Community Post"]
+
+
+def page_marketing(data: dict, client):
+    st.header("Content Studio")
+    st.caption("Ready-to-use marketing copy, grounded in your actual products, channels, and priorities — not generic AI filler.")
+
+    content_type = st.selectbox("What are you creating?", CONTENT_TYPES)
+
+    platform = None
+    if content_type == "Social Media Post":
+        platform = st.selectbox("Platform", SOCIAL_PLATFORMS)
+
+    topic = st.text_area(
+        "What's this about?",
+        placeholder="e.g. Promote the Vietnamese Coffee Experience Kit to World Cup visitors in Houston",
+    )
+    tone_notes = st.text_input(
+        "Brand voice / tone notes (optional)",
+        placeholder="e.g. warm and personal, written in Yolanda's voice, keep it under 100 words",
+    )
+
+    if st.button("Generate Draft", type="primary"):
+        if client is None:
+            st.error("Enter a valid Anthropic API key in the sidebar first.")
+            return
+        if not topic.strip():
+            st.error("Tell Atlas what this content should be about first.")
+            return
+        with st.spinner("Drafting..."):
+            system = (
+                "You are Atlas's marketing content assistant for Dolce Mondo, a premium "
+                "global lifestyle brand (handcrafted sweets, Vietnamese Sweet Coffee, "
+                "globally inspired energy refreshers, Experiential Kits). Use ONLY the "
+                "business context provided for facts about products, channels, pricing, "
+                "and priorities — never invent product names, prices, or claims not "
+                "grounded in that context. Match a warm, premium, culturally-rooted brand "
+                "voice appropriate to a small but ambitious lifestyle brand. Output ONLY "
+                "the ready-to-use copy itself — no meta-commentary, no 'Here's a draft:', "
+                "no explanation before or after."
+            )
+            platform_line = f"Platform: {platform}\n" if platform else ""
+            user_msg = (
+                f"BUSINESS CONTEXT:\n{kb_context()}\n\n"
+                f"CONTENT TYPE: {content_type}\n"
+                f"{platform_line}"
+                f"TOPIC/FOCUS: {topic.strip()}\n"
+                f"TONE/NOTES: {tone_notes.strip() or 'Use your best judgment based on the brand context.'}\n\n"
+                "Write the content now."
+            )
+            draft = ask_claude(client, system, user_msg, max_tokens=1500)
+            if draft:
+                st.session_state.last_draft = {
+                    "content_type": content_type,
+                    "platform": platform,
+                    "topic": topic.strip(),
+                    "content": draft,
+                }
+
+    if st.session_state.get("last_draft"):
+        d = st.session_state.last_draft
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("**Draft**")
+        st.text_area("Copy this text", value=d["content"], height=200, key="draft_display", label_visibility="collapsed")
+        speak_button(d["content"], label="🔊 Read Aloud")
+
+        if st.button("💾 Save This Draft"):
+            data["marketing_drafts"].append({
+                "id": datetime.now().strftime("%Y%m%d%H%M%S%f"),
+                "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "content_type": d["content_type"],
+                "topic": d["topic"],
+                "content": d["content"],
+            })
+            save_data(data)
+            st.success("Draft saved.")
+
+    saved = data.get("marketing_drafts", [])
+    if saved:
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.expander(f"📁 Saved Drafts ({len(saved)})"):
+            for entry in reversed(saved):
+                st.markdown(f"**{entry['date']} — {entry['content_type']}**: {_esc(entry['topic'])}")
+                st.text_area(
+                    "Saved draft text", value=entry["content"], height=120,
+                    key=f"saved_{entry['id']}", label_visibility="collapsed",
+                )
+                st.markdown("---")
+
+
 def render_backup_restore(data: dict) -> None:
     """Streamlit Cloud's disk isn't guaranteed to survive redeploys/reboots, so
     this gives the founder a manual, reliable way to save and restore all
@@ -1177,7 +1279,7 @@ def main():
         page = st.radio(
             "Go to",
             ["Morning Brief", "Finance Data", "Square Data", "Vital Signs",
-             "Decisions Log", "Chat with Atlas"],
+             "Decisions Log", "Content Studio", "Chat with Atlas"],
             label_visibility="collapsed",
         )
 
@@ -1191,6 +1293,8 @@ def main():
         page_ten_questions(data, client)
     elif page == "Decisions Log":
         page_decisions_log(data)
+    elif page == "Content Studio":
+        page_marketing(data, client)
     elif page == "Chat with Atlas":
         page_chat(data, client)
 
