@@ -288,7 +288,10 @@ def speak_button(text: str, label: str = "🔊 Read Aloud") -> None:
     since Streamlit strips onclick/JS from markdown even with unsafe_allow_html."""
     if not text:
         return
-    safe_text = json.dumps(text)
+    # Escape apostrophes as HTML entities — without this, any apostrophe in the
+    # spoken text (e.g. "today's", "isn't") prematurely closes the single-quoted
+    # onclick='...' attribute below, silently breaking the button with no error.
+    safe_text = json.dumps(text).replace("'", "&#39;")
     html = f"""
     <button onclick='window.speechSynthesis.cancel();
         var u = new SpeechSynthesisUtterance({safe_text});
