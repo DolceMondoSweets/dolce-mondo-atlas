@@ -8,6 +8,7 @@ Deploy:        push this folder (incl. knowledge_base/) to your Streamlit Cloud 
 
 import json
 import os
+import html as html_lib
 from datetime import datetime
 from pathlib import Path
 
@@ -281,34 +282,37 @@ def check_password() -> bool:
 
 def speak_button(text: str, label: str = "🔊 Read Aloud") -> None:
     """Renders a button that reads the given text aloud using the browser's
-    built-in speech synthesis — free, no API call, works in Chrome/Edge/Safari.
-    Uses st.html (injects directly into the page, no iframe) rather than
-    components.html, since components.html's sandboxed iframe appears to block
-    speechSynthesis output in some browsers. st.markdown won't work either,
-    since Streamlit strips onclick/JS from markdown even with unsafe_allow_html."""
+    built-in speech synthesis — free, no API call.
+
+    Uses components.html (a real unsandboxed script context) rather than
+    st.markdown or st.html, both of which appear to silently strip onclick/
+    event-handler attributes as a security measure — the button rendered
+    fine with those but never fired on click.
+
+    The text is placed in a data-* attribute (properly HTML-escaped via
+    html.escape) and read back with getAttribute() in a fixed, static
+    onclick handler — rather than interpolating the text directly into a JS
+    string literal inside the attribute. This means no apostrophe, quote, or
+    special character in the spoken text can ever break the button again,
+    regardless of what Claude generates."""
     if not text:
         return
-    # Escape apostrophes as HTML entities — without this, any apostrophe in the
-    # spoken text (e.g. "today's", "isn't") prematurely closes the single-quoted
-    # onclick='...' attribute below, silently breaking the button with no error.
-    safe_text = json.dumps(text).replace("'", "&#39;")
-    html = f"""
-    <button onclick='window.speechSynthesis.cancel();
-        var u = new SpeechSynthesisUtterance({safe_text});
-        window.speechSynthesis.speak(u);'
-        style='background:#2c3e50;color:white;border:none;border-radius:6px;
-        padding:8px 16px;cursor:pointer;font-size:14px;font-family:sans-serif;'>{label}</button>
+    escaped_text = html_lib.escape(text, quote=True)
+    escaped_label = html_lib.escape(label, quote=True)
+    widget_html = f"""
+    <button data-speak-text="{escaped_text}"
+        onclick="var t=this.getAttribute('data-speak-text'); window.speechSynthesis.cancel(); var u=new SpeechSynthesisUtterance(t); window.speechSynthesis.speak(u);"
+        style="background:#2c3e50;color:white;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:14px;font-family:sans-serif;">{escaped_label}</button>
     """
-    st.html(html)
+    components.html(widget_html, height=45)
 
 
 def stop_speaking_button() -> None:
     html = """
-    <button onclick='window.speechSynthesis.cancel();'
-        style='background:#95a5a6;color:white;border:none;border-radius:6px;
-        padding:8px 16px;cursor:pointer;font-size:14px;font-family:sans-serif;'>⏹ Stop</button>
+    <button onclick="window.speechSynthesis.cancel();"
+        style="background:#95a5a6;color:white;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:14px;font-family:sans-serif;">⏹ Stop</button>
     """
-    st.html(html)
+    components.html(html, height=45)
 
 
 def brief_narration(brief: dict) -> str:
