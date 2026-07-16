@@ -15,6 +15,12 @@ import streamlit as st
 import pandas as pd
 import anthropic
 
+try:
+    from streamlit_mic_recorder import speech_to_text
+    VOICE_AVAILABLE = True
+except ImportError:
+    VOICE_AVAILABLE = False
+
 # ─────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────
@@ -664,6 +670,14 @@ def page_square_data(data: dict):
 # PAGE: 10 Questions
 # ─────────────────────────────────────────────────────────────
 
+STATUS_STYLE = {
+    "good": {"color": "#27ae60", "bg": "#eafaf1", "icon": "✅"},
+    "caution": {"color": "#f39c12", "bg": "#fef5e7", "icon": "⚠️"},
+    "concern": {"color": "#e74c3c", "bg": "#fdecea", "icon": "🔴"},
+    "unknown": {"color": "#9e9e9e", "bg": "#f2f2f2", "icon": "❓"},
+}
+
+
 def page_ten_questions(data: dict, client):
     st.header("The 10 Questions")
     st.caption("The daily check-in every founder should be able to answer.")
@@ -682,10 +696,25 @@ def page_ten_questions(data: dict, client):
             system = (
                 "You are Atlas, the AI Operating System for Dolce Mondo. Never hallucinate "
                 "facts about the business — use only the business context and finance "
-                "snapshot provided. Answer each of the 10 questions concisely (2-4 "
-                "sentences each), numbered to match. Where the answer depends on facts not "
-                "in your context, say so plainly instead of guessing. Default to brutal "
-                "honesty and execution focus, consistent with how Atlas is meant to operate."
+                "snapshot provided. Where the answer depends on facts not in your context, "
+                "say so plainly instead of guessing. Default to brutal honesty and execution "
+                "focus, consistent with how Atlas is meant to operate.\n\n"
+                "Respond ONLY with valid JSON, no markdown code fences, no commentary "
+                "before or after — just the raw JSON object, matching exactly this shape:\n\n"
+                "{\n"
+                '  "answers": [\n'
+                "    {\n"
+                '      "question": "<the exact question text as given>",\n'
+                '      "status": "good" | "caution" | "concern" | "unknown",\n'
+                '      "verdict": "<one short punchy phrase, 3-8 words>",\n'
+                '      "detail": "<2-4 sentences of grounded explanation>"\n'
+                "    }\n"
+                "    ... one object per question, in the same order given\n"
+                "  ]\n"
+                "}\n\n"
+                "status meanings: 'good' = healthy/on track, 'caution' = watch this, "
+                "'concern' = needs attention now, 'unknown' = no data exists to answer this "
+                "yet (use this honestly rather than guessing a status)."
             )
             questions_block = "\n".join(f"{i}. {q}" for i, q in enumerate(TEN_QUESTIONS, 1))
             user_msg = (
@@ -693,9 +722,30 @@ def page_ten_questions(data: dict, client):
                 f"FINANCE SNAPSHOT:\n{finance_snapshot_str(data)}\n\n"
                 f"QUESTIONS:\n{questions_block}"
             )
-            answers = ask_claude(client, system, user_msg, max_tokens=2500)
-            if answers:
-                safe_markdown(answers)
+            result = ask_claude_json(client, system, user_msg, max_tokens=3000)
+            if result:
+                st.session_state.last_ten_questions = result
+
+    if st.session_state.get("last_ten_questions"):
+        render_ten_questions(st.session_state.last_ten_questions)
+
+
+def render_ten_questions(result: dict) -> None:
+    st.markdown("<br>", unsafe_allow_html=True)
+    answers = result.get("answers", [])
+    for a in answers:
+        style = STATUS_STYLE.get(a.get("status", "unknown"), STATUS_STYLE["unknown"])
+        st.markdown(
+            f"<div style='background:{style['bg']};border-left:5px solid {style['color']};"
+            f"border-radius:6px;padding:14px 16px;margin-bottom:12px'>"
+            f"<div style='display:flex;align-items:center;justify-content:space-between'>"
+            f"<div style='font-weight:700'>{style['icon']} {_esc(a.get('question', ''))}</div>"
+            f"<div style='font-weight:700;color:{style['color']}'>{_esc(a.get('verdict', ''))}</div>"
+            f"</div>"
+            f"<div style='margin-top:6px;color:#444'>{_esc(a.get('detail', ''))}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -785,42 +835,88 @@ def _render_decision(data: dict, entry: dict) -> None:
 # PAGE: Chat with Atlas
 # ─────────────────────────────────────────────────────────────
 
+ASSISTANT_AVATAR = "🧭"
+USER_AVATAR = "🧑‍💼"
+
+QUICK_PROMPTS = [
+    "What's my cash runway right now?",
+    "What's blocking the H-E-B reopening?",
+    "What decisions do I still need to close?",
+]
+
+
 def page_chat(data: dict, client):
     st.header("Chat with Atlas")
+    st.caption("Grounded in your knowledge base and current finance data — ask anything about the business.")
 
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
-    for msg in st.session_state.chat_history:
-        with st.chat_message(msg["role"]):
-            safe_markdown(msg["content"])
+    pending_prompt = None
 
-    prompt = st.chat_input("Ask Atlas anything about the business...")
+    with st.container(border=True):
+        if not st.session_state.chat_history:
+            st.markdown(
+                "<div style='text-align:center;padding:24px 12px;color:#888'>"
+                f"<div style='font-size:32px'>{ASSISTANT_AVATAR}</div>"
+                "<div style='margin-top:8px'>Ask Atlas anything, or try one of these:</div>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            cols = st.columns(len(QUICK_PROMPTS))
+            for col, qp in zip(cols, QUICK_PROMPTS):
+                with col:
+                    if st.button(qp, use_container_width=True, key=f"quick_{qp}"):
+                        pending_prompt = qp
+        else:
+            for msg in st.session_state.chat_history:
+                avatar = ASSISTANT_AVATAR if msg["role"] == "assistant" else USER_AVATAR
+                with st.chat_message(msg["role"], avatar=avatar):
+                    safe_markdown(msg["content"])
+
+    typed_prompt = st.chat_input("Ask Atlas anything about the business...")
+
+    voice_prompt = None
+    if VOICE_AVAILABLE:
+        vc1, vc2 = st.columns([1, 5])
+        with vc1:
+            voice_prompt = speech_to_text(
+                language="en",
+                start_prompt="🎤 Speak",
+                stop_prompt="⏹ Stop",
+                just_once=True,
+                use_container_width=True,
+                key="atlas_voice_input",
+            )
+        with vc2:
+            st.caption("Or click 🎤 and ask your question out loud.")
+    else:
+        st.caption("Voice input not available — the streamlit-mic-recorder package isn't installed.")
+
+    prompt = pending_prompt or typed_prompt or voice_prompt
+
     if prompt:
         if client is None:
             st.error("Enter a valid Anthropic API key in the sidebar first.")
             return
         st.session_state.chat_history.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
 
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                system = (
-                    "You are Atlas, the AI operating system for Dolce Mondo, a Houston-based "
-                    "coffee, beverage, and sweets brand run solo by its founder. Be direct "
-                    "and concrete. Ground answers in the business context and finance "
-                    "snapshot provided; say clearly when something isn't covered by them."
-                )
-                user_msg = (
-                    f"BUSINESS CONTEXT:\n{kb_context()}\n\n"
-                    f"FINANCE SNAPSHOT:\n{finance_snapshot_str(data)}\n\n"
-                    f"QUESTION:\n{prompt}"
-                )
-                reply = ask_claude(client, system, user_msg)
-                if reply:
-                    safe_markdown(reply)
-                    st.session_state.chat_history.append({"role": "assistant", "content": reply})
+        system = (
+            "You are Atlas, the AI operating system for Dolce Mondo, a Houston-based "
+            "coffee, beverage, and sweets brand run solo by its founder. Be direct "
+            "and concrete. Ground answers in the business context and finance "
+            "snapshot provided; say clearly when something isn't covered by them."
+        )
+        user_msg = (
+            f"BUSINESS CONTEXT:\n{kb_context()}\n\n"
+            f"FINANCE SNAPSHOT:\n{finance_snapshot_str(data)}\n\n"
+            f"QUESTION:\n{prompt}"
+        )
+        with st.spinner("Thinking..."):
+            reply = ask_claude(client, system, user_msg)
+        if reply:
+            st.session_state.chat_history.append({"role": "assistant", "content": reply})
+        st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────
