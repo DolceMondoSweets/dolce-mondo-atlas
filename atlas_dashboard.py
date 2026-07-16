@@ -1165,7 +1165,8 @@ def page_marketing(data: dict, client):
         d = st.session_state.last_draft
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("**Draft**")
-        st.text_area("Copy this text", value=d["content"], height=200, key="draft_display", label_visibility="collapsed")
+        st.code(d["content"], language=None, wrap_lines=True)
+        st.caption("Hover over the box above and click the copy icon in the top-right corner.")
         speak_button(d["content"], label="🔊 Read Aloud")
 
         if st.button("💾 Save This Draft"):
@@ -1185,10 +1186,7 @@ def page_marketing(data: dict, client):
         with st.expander(f"📁 Saved Drafts ({len(saved)})"):
             for entry in reversed(saved):
                 st.markdown(f"**{entry['date']} — {entry['content_type']}**: {_esc(entry['topic'])}")
-                st.text_area(
-                    "Saved draft text", value=entry["content"], height=120,
-                    key=f"saved_{entry['id']}", label_visibility="collapsed",
-                )
+                st.code(entry["content"], language=None, wrap_lines=True)
                 st.markdown("---")
 
 
