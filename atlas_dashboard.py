@@ -1,85 +1,1201 @@
-# Dashboard Vision — The North Star
+"""
+Atlas — Dolce Mondo AI Operating System
+Production-ready Streamlit dashboard.
 
-**Status:** Recreated July 15, 2026 (original file was never completed/uploaded).
-**Owner:** Founder, quarterbacked by Claude.
-**Purpose:** This is the single document every other build decision should be checked against. If a feature, integration, or architectural choice doesn't serve this vision, it doesn't get built yet — regardless of which AI proposed it.
+Run locally:   streamlit run atlas_app.py
+Deploy:        push this folder (incl. knowledge_base/) to your Streamlit Cloud repo.
+"""
 
----
+import json
+import os
+import html as html_lib
+from datetime import datetime
+from pathlib import Path
 
-## 1. The Ultimate Vision
+import streamlit as st
+import streamlit.components.v1 as components
+import pandas as pd
+import anthropic
 
-Atlas is an **AI Companion to the CEO**.
+try:
+    from streamlit_mic_recorder import speech_to_text
+    VOICE_AVAILABLE = True
+except ImportError:
+    VOICE_AVAILABLE = False
 
-Every small business generates dozens of data points daily — cash, sales, ops status, customer signals, marketing performance, team output — that a real CEO would use to make decisions. Most solo founders and small teams don't have the staff to collect, structure, and analyze that data. Atlas is the layer that does it for them: it collects the data points, turns them into daily answers to the questions that matter, and becomes the founder's best source for decision-making.
+# ─────────────────────────────────────────────────────────────
+# CONFIG
+# ─────────────────────────────────────────────────────────────
 
-Dolce Mondo is not the product. Dolce Mondo is customer #1 and the proof that the system works on real, messy, small-business data. The long-term goal is a SaaS platform — vertical first (food/CPG, since that's what we're proving on), then horizontal (any small business) — where Atlas becomes "the AI Operating System for small businesses."
+APP_TITLE = "Atlas"
+APP_SUBTITLE = "Dolce Mondo AI Operating System"
+MODEL = "claude-sonnet-5"
+DATA_FILE = Path(__file__).parent / "atlas_data.json"
+KB_DIR = Path(__file__).parent / "knowledge_base"
 
-## 2. What Atlas Must Never Stop Doing (Non-Negotiable Core)
+TEN_QUESTIONS = [
+    "Am I making money?",
+    "Am I running out of money?",
+    "Are sales growing?",
+    "Are customers happy?",
+    "Are operations healthy?",
+    "Is my team performing?",
+    "Are we executing our goals?",
+    "What risks are coming?",
+    "What opportunities am I missing?",
+    "What should I do today?",
+]
 
-Regardless of how far the platform grows, Atlas always:
+# ─────────────────────────────────────────────────────────────
+# PERSISTENCE
+# Note: On Streamlit Community Cloud, local disk is wiped on redeploy/reboot,
+# so this JSON file is durable *between reruns and most restarts* but not
+# guaranteed forever. For real durability, swap this for Google Sheets,
+# Supabase, or a small hosted database — same load_data()/save_data()
+# interface, different backend.
+# ─────────────────────────────────────────────────────────────
 
-- Answers the 10 Core Questions daily (see `Claude_System_Design_Brief_Project_Atlas.md`).
-- Produces the Morning Brief in the exact specified format.
-- Never hallucinates facts about the business — grounded only in real data provided.
-- Maintains Executive Memory: every significant decision logged with Why / Who / Expected Outcome / Actual Outcome, and reviewed later against what actually happened.
-- Defaults to brutal honesty and execution focus over polish or flattery.
-- Escalates high-stakes decisions (finance, regulatory, customer, hiring) for human review rather than acting autonomously.
+DEFAULT_DATA = {
+    "cash": 8709.65,
+    "burn": 5000.0,
+    "runway": 52,
+    "revenue_mtd": 0.0,
+    # decisions: list of {id, date, decision, why, who, expected_outcome,
+    # actual_outcome, status}. Status is one of: "Open", "Closed".
+    "decisions": [],
+    # brief_history: list of {date, overall_score, momentum, cash_runway_days,
+    # revenue_mtd}. One entry appended each time a Morning Brief is generated —
+    # this is what makes "momentum" a real trend instead of a single-snapshot guess.
+    "brief_history": [],
+}
 
-## 3. The Roadmap (Shortest Path, Nothing Skipped That Shouldn't Be)
 
-### Phase 1 — Prove it on Dolce Mondo (now → ~3 months)
-Stable daily-use dashboard. Finance + Square data collection (manual/CSV first). Morning Brief and Vital Signs (the 10 core questions) running reliably. Decisions Log in real use. Basic polish and mobile-friendliness. This phase is done when the founder is actually opening Atlas every day and it's changing what he does — not when the code is "feature complete."
-**Explicitly deferred:** multi-user/auth, predictive analytics, bank integration, any multi-tenant code.
+def load_data() -> dict:
+    if DATA_FILE.exists():
+        try:
+            with open(DATA_FILE, "r") as f:
+                data = json.load(f)
+            # backfill any missing keys from defaults
+            for k, v in DEFAULT_DATA.items():
+                data.setdefault(k, v)
+            return data
+        except (json.JSONDecodeError, OSError):
+            st.warning("Data file was unreadable — starting fresh.")
+    return DEFAULT_DATA.copy()
 
-### Phase 2 — Remove manual data entry
-Square API integration — **shipped 2026-07-15** (live MTD revenue pull via Square Orders Search API, alongside manual/CSV fallback), pulled forward from its original phase per founder's decision to keep building without waiting. Possibly bank read-only (Plaid) still pending if Square alone doesn't cover it.
 
-### Phase 3 — Generalize the data model
-The real unlock for SaaS. Today "cash," "burn," "Square revenue" are hardcoded to Dolce Mondo's shape. This phase redesigns the data model so "business type → relevant metrics" is configurable. Done deliberately, once Phase 1 is stable — not guessed at in advance.
+def save_data(data: dict) -> None:
+    try:
+        with open(DATA_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except OSError as e:
+        st.error(f"Could not save data: {e}")
 
-### Phase 4 — Second customer
-Found by hand, not through a signup flow. The goal is to learn what breaks with a different business's real data before building self-serve anything. This is also where multi-tenant auth and real security become non-optional.
 
-### Phase 5 — Platform
-Self-serve signup, billing, predictive/agent features, franchise/multi-location playbooks. This is the payoff phase, not the foundation — no architectural decisions should be made for this phase until Phase 4 has taught us what customer #2 actually needs.
+# ─────────────────────────────────────────────────────────────
+# KNOWLEDGE BASE
+# Drop your 11 .md files into the knowledge_base/ folder next to this file.
+# ─────────────────────────────────────────────────────────────
 
-## 4. Objectives by Horizon
+@st.cache_data(show_spinner=False)
+def load_knowledge_base() -> dict:
+    """Returns {filename: content} for every .md file in knowledge_base/."""
+    kb = {}
+    if KB_DIR.exists():
+        for path in sorted(KB_DIR.glob("*.md")):
+            try:
+                kb[path.name] = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+    return kb
 
-**Short-Term**
-- Stable, daily-use dashboard answering the 10 core questions
-- Automatic or low-friction Morning Brief with real finance and Square data
-- Persistent data input for cash, burn, revenue, key metrics
-- Executive Memory (Decisions Log) tracking decisions and outcomes
-- Basic polish: colors, mobile-friendliness, clean layout
-  - Shipped 2026-07-15: Decisions Log now captures structured fields (Why / Who / Expected Outcome / Actual Outcome / Status) with the ability to close the loop on open decisions
-  - Shipped 2026-07-15: CEO Intelligence Score broken into 7 domains (Financial, Operations, Marketing, Customer, People, Growth, Risk) plus Overall — built ahead of the original "wait for a week of use" plan, per founder's explicit call based on 25 years of business experience
-- Reliable enough for daily operation
-- The beginning of an AI Operating System for Dolce Mondo
 
-**Medium-Term**
-- Full Square API (and possibly bank) integration for automatic sales/cash data
-- Additional modules: full Operations status, Marketing performance
-- Voice capability: voice-in **shipped 2026-07-15** on the Chat with Atlas page (browser-based speech-to-text via streamlit-mic-recorder, free — no paid transcription API). Voice-out **shipped 2026-07-15** — "Read Aloud" buttons on Morning Brief and Chat, using free browser speech synthesis, no paid TTS API.
-- Risk and Opportunity prediction based on real historical data (not before there's real historical data to learn from)
-- Exportable reports for accountant/investor raise
-- Multi-user support for future hires (COO, baking chef, sales director)
-- Validated ROI — time saved, better decisions, faster reopening. **Measurement starts in Phase 1, not medium-term** — there's no baseline to compare against otherwise.
+def kb_context(selected_files: list[str] | None = None, char_limit: int = 40000) -> str:
+    """Concatenate selected (or all) KB files into a single context string,
+    trimmed to a rough character budget so prompts don't blow up."""
+    kb = load_knowledge_base()
+    files = selected_files if selected_files else list(kb.keys())
+    chunks = []
+    total = 0
+    for name in files:
+        content = kb.get(name, "")
+        if total + len(content) > char_limit:
+            content = content[: max(0, char_limit - total)]
+        chunks.append(f"### {name}\n{content}")
+        total += len(content)
+        if total >= char_limit:
+            break
+    return "\n\n".join(chunks)
 
-**Long-Term**
-- Full SaaS version for other small businesses (vertical first, then horizontal)
-- Advanced predictive analytics and AI agents per department
-- Franchise / multi-location playbook automation
-- Become "the AI Operating System" for small businesses
-- Sell the platform to other businesses
 
-## 5. Design Principles That Protect the Path
+# ─────────────────────────────────────────────────────────────
+# CLAUDE API
+# ─────────────────────────────────────────────────────────────
 
-- **Dogfood first.** Nothing gets built for a hypothetical second customer before it's proven on Dolce Mondo.
-- **Low-code / non-coder friendly.** The founder is not a programmer and is relying on Claude plus non-coding platforms (Streamlit Cloud, GitHub's web UI, Google Drive). Every build decision should minimize the founder's need to touch raw code directly, and every instruction should assume zero prior coding knowledge.
-- **Boring before clever.** Reliability and daily use beat predictive analytics, agents, or franchise automation — all of which remain explicitly out of scope until their phase arrives.
-- **Single source of truth.** This document, plus the 00–09 knowledge base files, are what Atlas is grounded in. Any AI working on this project (Claude, Grok, ChatGPT) should check proposals against this file before building.
-- **Human-in-the-loop always.** High-stakes decisions get surfaced for founder approval, never auto-executed.
+def get_client() -> anthropic.Anthropic | None:
+    # Check Secrets first so the key persists across sessions without re-pasting.
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", "") or st.session_state.get("api_key", "")
+    if api_key and api_key.startswith("sk-ant-"):
+        return anthropic.Anthropic(api_key=api_key)
+    return None
 
-## 6. Interaction Preference
 
-Simple, clean web dashboard (Streamlit for now). Daily/weekly briefings, decision synthesis, content ideas, unit economics tracking — all in one place the founder can check each morning without needing to interpret raw data himself.
+def ask_claude(client: anthropic.Anthropic, system: str, user_message: str,
+                max_tokens: int = 2000) -> str | None:
+    """Single point of contact with the API. Handles text extraction and errors."""
+    try:
+        message = client.messages.create(
+            model=MODEL,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        if message.stop_reason == "max_tokens":
+            st.warning(
+                "Atlas's response was cut off before it finished (hit the length limit). "
+                "Try again — if it keeps happening, this response type needs a higher limit."
+            )
+        text = next((b.text for b in message.content if b.type == "text"), None)
+        if not text:
+            st.error("Claude returned no text content. Try again.")
+        return text
+    except anthropic.APIError as e:
+        st.error(f"Anthropic API error: {e}")
+    except Exception as e:
+        st.error(f"Unexpected error: {e}")
+    return None
+
+
+def ask_claude_json(client: anthropic.Anthropic, system: str, user_message: str,
+                     max_tokens: int = 2000) -> dict | None:
+    """Same as ask_claude, but parses the response as JSON. Strips markdown code
+    fences if Claude wraps the JSON in ```json ... ``` despite instructions not to."""
+    raw = ask_claude(client, system, user_message, max_tokens=max_tokens)
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```")[1]
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+        cleaned = cleaned.strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        st.error("Atlas returned a response that couldn't be parsed as structured data. Showing raw output below instead.")
+        st.text(raw)
+        return None
+
+
+# ─────────────────────────────────────────────────────────────
+# SQUARE API
+# Requires a Square access token + Location ID, entered in the sidebar.
+# Get these from https://developer.squareup.com/apps — create an app,
+# use the PRODUCTION access token (not sandbox) to pull real sales data,
+# and find your Location ID under that app's Locations tab.
+# ─────────────────────────────────────────────────────────────
+
+def fetch_square_mtd_revenue(access_token: str, location_id: str) -> float | None:
+    """Sums COMPLETED order totals for the current calendar month via Square's
+    Orders Search API. Returns None (and shows an error) on failure."""
+    import requests
+
+    start_of_month = datetime.now().replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    ).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+    url = "https://connect.squareup.com/v2/orders/search"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Square-Version": "2024-10-17",
+    }
+    body = {
+        "location_ids": [location_id],
+        "query": {
+            "filter": {
+                "state_filter": {"states": ["COMPLETED"]},
+                "date_time_filter": {
+                    "closed_at": {"start_at": start_of_month}
+                },
+            }
+        },
+        "limit": 500,
+    }
+
+    try:
+        total_cents = 0
+        cursor = None
+        while True:
+            if cursor:
+                body["cursor"] = cursor
+            resp = requests.post(url, headers=headers, json=body, timeout=15)
+            if resp.status_code != 200:
+                st.error(f"Square API error ({resp.status_code}): {resp.text}")
+                return None
+            payload = resp.json()
+            for order in payload.get("orders", []):
+                total_money = order.get("total_money", {})
+                total_cents += total_money.get("amount", 0)
+            cursor = payload.get("cursor")
+            if not cursor:
+                break
+        return total_cents / 100.0
+    except requests.RequestException as e:
+        st.error(f"Could not reach Square: {e}")
+        return None
+    except Exception as e:
+        st.error(f"Unexpected error fetching Square data: {e}")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────
+# ACCESS CONTROL
+# This is a public URL, so it needs a lock on the front door before it
+# holds real cash/burn/decisions data. The password lives in Streamlit
+# Cloud's "Secrets" settings (a form in the dashboard, not a code file),
+# so it's never committed to your repo.
+# ─────────────────────────────────────────────────────────────
+
+def check_password() -> bool:
+    """Returns True once the correct password has been entered this session."""
+    if st.session_state.get("authenticated", False):
+        return True
+
+    st.title(APP_TITLE)
+    st.markdown(f"**{APP_SUBTITLE}**")
+    st.subheader("🔒 Enter password to continue")
+
+    configured_password = st.secrets.get("APP_PASSWORD", None)
+    if not configured_password:
+        st.error(
+            "No password is configured yet. Add APP_PASSWORD in your Streamlit Cloud "
+            "app's Settings → Secrets, e.g.:\n\nAPP_PASSWORD = \"your-password-here\""
+        )
+        return False
+
+    entered = st.text_input("Password", type="password")
+    if st.button("Enter"):
+        if entered == configured_password:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+    return False
+
+
+def speak_button(text: str, label: str = "🔊 Read Aloud") -> None:
+    """Renders a button that reads the given text aloud using the browser's
+    built-in speech synthesis — free, no API call.
+
+    Uses components.html (a real unsandboxed script context) rather than
+    st.markdown or st.html, both of which appear to silently strip onclick/
+    event-handler attributes as a security measure — the button rendered
+    fine with those but never fired on click.
+
+    The text is placed in a data-* attribute (properly HTML-escaped via
+    html.escape) and read back with getAttribute() in a fixed, static
+    onclick handler — rather than interpolating the text directly into a JS
+    string literal inside the attribute. This means no apostrophe, quote, or
+    special character in the spoken text can ever break the button again,
+    regardless of what Claude generates."""
+    if not text:
+        return
+    escaped_text = html_lib.escape(text, quote=True)
+    escaped_label = html_lib.escape(label, quote=True)
+    widget_html = f"""
+    <button data-speak-text="{escaped_text}"
+        onclick="var t=this.getAttribute('data-speak-text'); window.speechSynthesis.cancel(); var u=new SpeechSynthesisUtterance(t); window.speechSynthesis.speak(u);"
+        style="background:#2c3e50;color:white;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:14px;font-family:sans-serif;">{escaped_label}</button>
+    """
+    components.html(widget_html, height=45)
+
+
+def stop_speaking_button() -> None:
+    html = """
+    <button onclick="window.speechSynthesis.cancel();"
+        style="background:#95a5a6;color:white;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:14px;font-family:sans-serif;">⏹ Stop</button>
+    """
+    components.html(html, height=45)
+
+
+def brief_narration(brief: dict) -> str:
+    """Builds a short spoken-friendly summary of the Morning Brief — the full
+    JSON read aloud verbatim would be tedious, so this narrates the key points."""
+    overall = brief.get("overall_score")
+    momentum = brief.get("momentum", "unknown")
+    runway = brief.get("cash_runway_days")
+    parts = [
+        f"Good morning. Your overall business score is {overall if overall is not None else 'not yet available'} out of 100.",
+        f"Momentum is {momentum}.",
+        f"Cash runway is {runway} days." if runway is not None else "Cash runway is unknown.",
+        f"Today's biggest opportunity: {brief.get('biggest_opportunity', '')}",
+        f"Biggest risk: {brief.get('biggest_risk', '')}",
+        f"Recommended focus: {brief.get('recommended_focus', '')}",
+    ]
+    return " ".join(p for p in parts if p)
+
+
+def safe_markdown(text: str) -> None:
+    """st.markdown treats text between two $ signs as LaTeX math, which garbles
+    dollar amounts (e.g. "$70K...$11.6K" gets rendered as an equation). Escaping
+    every $ prevents that without changing anything else about the formatting."""
+    st.markdown(text.replace("$", "\\$"))
+
+
+def _compact_html(html: str) -> str:
+    """Collapses a multi-line, indented HTML string into a single line.
+    Markdown treats 4+ spaces of leading indentation as a code block, so any
+    multi-line f-string HTML passed to st.markdown must be flattened first or
+    it renders as literal text instead of an actual button/div."""
+    return " ".join(line.strip() for line in html.strip().splitlines())
+
+
+def score_color(score) -> str:
+    """Red/orange/green banding for a 0-100 score. Gray for missing data."""
+    if score is None:
+        return "#9e9e9e"
+    if score < 40:
+        return "#e74c3c"
+    if score < 70:
+        return "#f39c12"
+    return "#27ae60"
+
+
+def runway_color(days) -> str:
+    if days is None:
+        return "#9e9e9e"
+    if days < 30:
+        return "#e74c3c"
+    if days < 60:
+        return "#f39c12"
+    return "#27ae60"
+
+
+def momentum_color(momentum: str) -> str:
+    return {"Positive": "#27ae60", "Neutral": "#f39c12", "Declining": "#e74c3c"}.get(momentum, "#9e9e9e")
+
+
+def trend_history_str(data: dict, limit: int = 14) -> str:
+    history = data.get("brief_history", [])[-limit:]
+    if not history:
+        return "No prior briefs recorded yet — this is the first."
+    lines = []
+    for h in history:
+        lines.append(
+            f"{h.get('date')}: Overall {h.get('overall_score')}/100, "
+            f"Momentum {h.get('momentum')}, Runway {h.get('cash_runway_days')} days, "
+            f"MTD Revenue ${h.get('revenue_mtd', 0):,.2f}"
+        )
+    return "\n".join(lines)
+
+
+def record_brief_history(data: dict, brief: dict) -> None:
+    """Appends today's brief scores to brief_history for trend tracking. If a
+    brief was already generated today, updates that entry instead of creating
+    a duplicate (so regenerating mid-day doesn't pollute the trend)."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    entry = {
+        "date": today,
+        "overall_score": brief.get("overall_score"),
+        "momentum": brief.get("momentum"),
+        "cash_runway_days": brief.get("cash_runway_days"),
+        "revenue_mtd": data.get("revenue_mtd"),
+    }
+    history = data.setdefault("brief_history", [])
+    for i, existing in enumerate(history):
+        if existing.get("date") == today:
+            history[i] = entry
+            break
+    else:
+        history.append(entry)
+    save_data(data)
+
+
+def finance_snapshot_str(data: dict) -> str:
+
+    return (
+        f"Current Cash Balance: ${data['cash']:,.2f}\n"
+        f"Monthly Burn Rate: ${data['burn']:,.2f}\n"
+        f"Runway: {data['runway']} days\n"
+        f"Month-to-Date Revenue: ${data['revenue_mtd']:,.2f}\n"
+        f"Today's Date: {datetime.now().strftime('%B %d, %Y')}"
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# PAGE: Morning Brief
+# ─────────────────────────────────────────────────────────────
+
+DOMAIN_ORDER = ["Financial Health", "Operations", "Marketing", "Customer", "People", "Growth", "Risk"]
+
+
+def page_morning_brief(data: dict, client):
+    st.header("Good Morning, Founder")
+    st.write(f"**Date:** {datetime.now().strftime('%B %d, %Y')}")
+
+    st.success(
+        f"**Finance Snapshot** — Cash: ${data['cash']:,.2f} | "
+        f"Burn: ${data['burn']:,.2f} | Runway: {data['runway']} days | "
+        f"MTD Revenue: ${data['revenue_mtd']:,.2f}"
+    )
+
+    if st.button("Generate Fresh Morning Brief", type="primary"):
+        if client is None:
+            st.error("Enter a valid Anthropic API key in the sidebar first.")
+            return
+        with st.spinner("Asking Claude..."):
+            system = (
+                "You are Atlas, the AI Operating System for Dolce Mondo, a Houston-based "
+                "coffee, beverage, and sweets brand. Never hallucinate facts about the "
+                "business — use only what's in the business context and finance snapshot "
+                "provided. Where data is genuinely missing, say so plainly rather than "
+                "guessing. Default to brutal honesty and execution focus.\n\n"
+                "Respond ONLY with valid JSON, no markdown code fences, no commentary "
+                "before or after — just the raw JSON object, matching exactly this shape:\n\n"
+                "{\n"
+                '  "momentum": "Positive" | "Neutral" | "Declining",\n'
+                '  "cash_runway_days": <integer or null>,\n'
+                '  "domain_scores": {\n'
+                '    "Financial Health": {"score": <0-100 or null>, "note": "<reason if null, else empty string>"},\n'
+                '    "Operations": {"score": <0-100 or null>, "note": "..."},\n'
+                '    "Marketing": {"score": <0-100 or null>, "note": "..."},\n'
+                '    "Customer": {"score": <0-100 or null>, "note": "..."},\n'
+                '    "People": {"score": <0-100 or null>, "note": "..."},\n'
+                '    "Growth": {"score": <0-100 or null>, "note": "..."},\n'
+                '    "Risk": {"score": <0-100 or null>, "note": "..."}\n'
+                "  },\n"
+                '  "overall_score": <0-100 or null>,\n'
+                '  "overall_note": "<e.g. average of N scoreable domains>",\n'
+                '  "biggest_opportunity": "<one clear sentence>",\n'
+                '  "potential_impact": "<quantified if possible>",\n'
+                '  "biggest_risk": "<one clear sentence>",\n'
+                '  "recommended_focus": "<one clear action for today>",\n'
+                '  "flagged_issues": ["<short issue>", "..."],\n'
+                '  "top_priorities": ["<priority 1>", "<priority 2>", "<priority 3>", "<priority 4>", "<priority 5>"]\n'
+                "}\n\n"
+                "Every domain score must be your own reasoned estimate grounded in what's "
+                "actually in the business context and finance snapshot — never fabricate a "
+                "precise number for a domain with no underlying data; use null with a note "
+                "instead. overall_score should reflect only the average of domains that ARE "
+                "scoreable. flagged_issues can be an empty list if nothing needs flagging."
+            )
+            user_msg = (
+                f"BUSINESS CONTEXT:\n{kb_context()}\n\n"
+                f"FINANCE SNAPSHOT:\n{finance_snapshot_str(data)}\n\n"
+                f"RECENT TREND (previous briefs, oldest to newest):\n{trend_history_str(data)}\n\n"
+                "Give me this morning's brief as JSON. Base 'momentum' on the actual "
+                "trend above where history exists (e.g. score/runway moving up or down "
+                "across entries) rather than a guess from today's snapshot alone. If "
+                "there's no meaningful history yet, say so is fine — don't fabricate a trend."
+            )
+            brief = ask_claude_json(client, system, user_msg, max_tokens=4000)
+            if brief:
+                st.session_state.last_brief = brief
+                record_brief_history(data, brief)
+
+    if st.session_state.get("last_brief"):
+        render_morning_brief(st.session_state.last_brief, data)
+    else:
+        st.info("Click the button to generate a fresh brief.")
+
+
+def render_morning_brief(brief: dict, data: dict) -> None:
+    st.markdown("### Atlas Morning Brief")
+    sc1, sc2 = st.columns([1, 1])
+    with sc1:
+        speak_button(brief_narration(brief), label="🔊 Read Summary Aloud")
+    with sc2:
+        stop_speaking_button()
+
+    # ── Top row: Overall score, Momentum, Cash Runway ──────────────────
+    overall = brief.get("overall_score")
+    momentum = brief.get("momentum", "Neutral")
+    runway = brief.get("cash_runway_days")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        color = score_color(overall)
+        overall_display = f"{overall}/100" if overall is not None else "N/A"
+        st.markdown(
+            f"<div style='text-align:center'><div style='font-size:14px;color:#888'>OVERALL SCORE</div>"
+            f"<div style='font-size:40px;font-weight:700;color:{color}'>{overall_display}</div></div>",
+            unsafe_allow_html=True,
+        )
+    with c2:
+        color = momentum_color(momentum)
+        st.markdown(
+            f"<div style='text-align:center'><div style='font-size:14px;color:#888'>MOMENTUM</div>"
+            f"<div style='font-size:28px;font-weight:700;color:{color};margin-top:8px'>{momentum}</div></div>",
+            unsafe_allow_html=True,
+        )
+    with c3:
+        color = runway_color(runway)
+        runway_display = f"{runway} days" if runway is not None else "Unknown"
+        st.markdown(
+            f"<div style='text-align:center'><div style='font-size:14px;color:#888'>CASH RUNWAY</div>"
+            f"<div style='font-size:28px;font-weight:700;color:{color};margin-top:8px'>{runway_display}</div></div>",
+            unsafe_allow_html=True,
+        )
+
+    if brief.get("overall_note"):
+        st.caption(brief["overall_note"])
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── CEO Intelligence Score bar chart ────────────────────────────────
+    st.markdown("**CEO Intelligence Score by Domain**")
+    domain_scores = brief.get("domain_scores", {})
+    scored_rows, unscored_labels = [], []
+    for domain in DOMAIN_ORDER:
+        entry = domain_scores.get(domain, {})
+        score = entry.get("score")
+        if score is not None:
+            scored_rows.append({"Domain": domain, "Score": score})
+        else:
+            unscored_labels.append(domain)
+
+    if scored_rows:
+        try:
+            import altair as alt
+            df = pd.DataFrame(scored_rows)
+            chart = (
+                alt.Chart(df)
+                .mark_bar(cornerRadius=4)
+                .encode(
+                    x=alt.X("Score:Q", scale=alt.Scale(domain=[0, 100]), title=None),
+                    y=alt.Y("Domain:N", sort=DOMAIN_ORDER, title=None),
+                    color=alt.Color(
+                        "Score:Q",
+                        scale=alt.Scale(domain=[0, 40, 70, 100], range=["#e74c3c", "#e74c3c", "#f39c12", "#27ae60"]),
+                        legend=None,
+                    ),
+                    tooltip=["Domain", "Score"],
+                )
+                .properties(height=32 * len(scored_rows))
+            )
+            st.altair_chart(chart, use_container_width=True)
+        except Exception:
+            for row in scored_rows:
+                st.write(f"{row['Domain']}: {row['Score']}/100")
+
+    if unscored_labels:
+        st.caption(f"Not yet scoreable (no data source): {', '.join(unscored_labels)}")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Opportunity / Risk side by side ─────────────────────────────────
+    oc, rc = st.columns(2)
+    with oc:
+        st.markdown(
+            f"<div style='background:#eafaf1;border-left:5px solid #27ae60;padding:14px;border-radius:6px;height:100%'>"
+            f"<div style='font-weight:700;color:#1e8449;margin-bottom:6px'>🟢 Today's Biggest Opportunity</div>"
+            f"<div>{_esc(brief.get('biggest_opportunity', '—'))}</div>"
+            f"<div style='margin-top:8px;font-style:italic;color:#555'>{_esc(brief.get('potential_impact', ''))}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    with rc:
+        st.markdown(
+            f"<div style='background:#fdecea;border-left:5px solid #e74c3c;padding:14px;border-radius:6px;height:100%'>"
+            f"<div style='font-weight:700;color:#c0392b;margin-bottom:6px'>🔴 Biggest Risk</div>"
+            f"<div>{_esc(brief.get('biggest_risk', '—'))}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Recommended focus ────────────────────────────────────────────────
+    st.markdown(
+        f"<div style='background:#fef5e7;border-left:5px solid #f39c12;padding:14px;border-radius:6px'>"
+        f"<div style='font-weight:700;color:#b9770e;margin-bottom:6px'>🎯 Recommended Focus</div>"
+        f"<div>{_esc(brief.get('recommended_focus', '—'))}</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Flagged issues ───────────────────────────────────────────────────
+    issues = brief.get("flagged_issues") or []
+    if issues:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("**⚠️ Flagged Issues**")
+        rows = "".join(
+            f"<div style='display:flex;align-items:center;background:#fff8e1;"
+            f"border-left:4px solid #f39c12;border-radius:6px;padding:10px 14px;"
+            f"margin-bottom:8px'>"
+            f"<span style='color:#f39c12;font-size:18px;margin-right:10px'>⚠</span>"
+            f"<span>{_esc(issue)}</span></div>"
+            for issue in issues
+        )
+        st.markdown(rows, unsafe_allow_html=True)
+    else:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.success("Everything else is on track.")
+
+    # ── Top 5 priorities ─────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("**🎯 Today's Top 5 Priorities**")
+    priority_colors = ["#c0392b", "#e67e22", "#f1c40f", "#2980b9", "#8e44ad"]
+    rows = ""
+    for i, p in enumerate(brief.get("top_priorities", []), 1):
+        badge_color = priority_colors[(i - 1) % len(priority_colors)]
+        rows += (
+            f"<div style='display:flex;align-items:center;background:#f8f9fa;"
+            f"border-radius:8px;padding:12px 16px;margin-bottom:10px;"
+            f"box-shadow:0 1px 2px rgba(0,0,0,0.06)'>"
+            f"<div style='min-width:32px;height:32px;border-radius:50%;background:{badge_color};"
+            f"color:white;display:flex;align-items:center;justify-content:center;"
+            f"font-weight:700;margin-right:14px;flex-shrink:0'>{i}</div>"
+            f"<div>{_esc(p)}</div></div>"
+        )
+    st.markdown(rows, unsafe_allow_html=True)
+
+    # ── Trend over time ──────────────────────────────────────────────────
+    history = data.get("brief_history", [])
+    scored_history = [h for h in history if h.get("overall_score") is not None]
+    if len(scored_history) >= 2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("**📈 Overall Score Trend**")
+        try:
+            import altair as alt
+            df = pd.DataFrame(scored_history)
+            df["date"] = pd.to_datetime(df["date"])
+            chart = (
+                alt.Chart(df)
+                .mark_line(point=True, color="#2980b9")
+                .encode(
+                    x=alt.X("date:T", title=None),
+                    y=alt.Y("overall_score:Q", title="Overall Score", scale=alt.Scale(domain=[0, 100])),
+                    tooltip=["date:T", "overall_score:Q", "momentum:N"],
+                )
+                .properties(height=200)
+            )
+            st.altair_chart(chart, use_container_width=True)
+        except Exception:
+            pass
+    elif len(scored_history) == 1:
+        st.caption("📈 Trend chart will appear once you have at least two days of Morning Briefs.")
+
+
+def _esc(text: str) -> str:
+    """Escape $ (LaTeX trap) and basic HTML chars for safe display inside
+    the custom HTML blocks used in the Morning Brief."""
+    if not text:
+        return ""
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("$", "&#36;")
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# PAGE: Finance Data
+# ─────────────────────────────────────────────────────────────
+
+def page_finance_data(data: dict):
+    st.header("Finance Data")
+    col1, col2 = st.columns(2)
+    with col1:
+        cash = st.number_input("Current Cash Balance ($)", value=float(data["cash"]))
+        burn = st.number_input("Monthly Burn Rate ($)", value=float(data["burn"]))
+    with col2:
+        runway = st.number_input("Calculated Runway (days)", value=int(data["runway"]))
+
+    if st.button("Save Finance Data", type="primary"):
+        data["cash"], data["burn"], data["runway"] = cash, burn, runway
+        save_data(data)
+        st.success("Saved.")
+
+
+# ─────────────────────────────────────────────────────────────
+# PAGE: Square Data
+# ─────────────────────────────────────────────────────────────
+
+def page_square_data(data: dict):
+    st.header("Square Data")
+
+    st.subheader("Live from Square API")
+
+    secret_square_token = st.secrets.get("SQUARE_ACCESS_TOKEN", "")
+    secret_square_location = st.secrets.get("SQUARE_LOCATION_ID", "")
+
+    if secret_square_token and secret_square_location:
+        st.caption("🟧 Square credentials loaded from Secrets — no need to enter them here.")
+        square_token = secret_square_token
+        square_location = secret_square_location
+    else:
+        st.caption(
+            "Get these from developer.squareup.com/apps — use the PRODUCTION access "
+            "token (not sandbox) for real sales data."
+        )
+        square_token = st.text_input(
+            "Square Access Token", type="password",
+            value=st.session_state.get("square_token", ""),
+        )
+        square_location = st.text_input(
+            "Square Location ID",
+            value=st.session_state.get("square_location", ""),
+        )
+        st.session_state.square_token = square_token
+        st.session_state.square_location = square_location
+
+    if st.button("Fetch MTD Revenue from Square", type="primary"):
+        if not square_token or not square_location:
+            st.error("Enter both your Square Access Token and Location ID first.")
+        else:
+            with st.spinner("Pulling this month's completed orders from Square..."):
+                total = fetch_square_mtd_revenue(square_token, square_location)
+                if total is not None:
+                    st.session_state.square_fetched_total = total
+
+    if st.session_state.get("square_fetched_total") is not None:
+        fetched = st.session_state.square_fetched_total
+        st.metric("MTD Revenue (from Square)", f"${fetched:,.2f}")
+        if st.button(f"Use ${fetched:,.2f} as MTD Revenue"):
+            data["revenue_mtd"] = fetched
+            save_data(data)
+            st.session_state.square_fetched_total = None
+            st.success("MTD Revenue updated from Square API.")
+            st.rerun()
+
+    st.divider()
+    st.subheader("Manual entry")
+    revenue_mtd = st.number_input("MTD Revenue ($, manual entry)", value=float(data["revenue_mtd"]))
+    if st.button("Save Manual Revenue", type="primary"):
+        data["revenue_mtd"] = revenue_mtd
+        save_data(data)
+        st.success("Saved.")
+
+    st.divider()
+    st.subheader("Or upload a Square CSV export")
+    uploaded = st.file_uploader("Square sales CSV", type=["csv"])
+    if uploaded is not None:
+        try:
+            df = pd.read_csv(uploaded)
+            st.dataframe(df.head(20), use_container_width=True)
+
+            amount_col = next(
+                (c for c in df.columns if c.strip().lower() in
+                 ("net total", "total", "gross sales", "amount")),
+                None,
+            )
+            if amount_col:
+                cleaned = (
+                    df[amount_col]
+                    .astype(str)
+                    .str.replace(r"[$,]", "", regex=True)
+                    .astype(float)
+                )
+                total = cleaned.sum()
+                st.metric("Detected total from CSV", f"${total:,.2f}")
+                if st.button(f"Use ${total:,.2f} as MTD Revenue"):
+                    data["revenue_mtd"] = float(total)
+                    save_data(data)
+                    st.success("MTD Revenue updated from CSV.")
+            else:
+                st.warning(
+                    "Couldn't auto-detect a total column. Expected one of: "
+                    "'Net Total', 'Total', 'Gross Sales', 'Amount'."
+                )
+        except Exception as e:
+            st.error(f"Could not read CSV: {e}")
+
+
+# ─────────────────────────────────────────────────────────────
+# PAGE: 10 Questions
+# ─────────────────────────────────────────────────────────────
+
+STATUS_STYLE = {
+    "good": {"color": "#27ae60", "bg": "#eafaf1", "icon": "✅"},
+    "caution": {"color": "#f39c12", "bg": "#fef5e7", "icon": "⚠️"},
+    "concern": {"color": "#e74c3c", "bg": "#fdecea", "icon": "🔴"},
+    "unknown": {"color": "#9e9e9e", "bg": "#f2f2f2", "icon": "❓"},
+}
+
+
+def page_ten_questions(data: dict, client):
+    st.header("Vital Signs")
+    st.caption("A quick daily read on the health of the business — the 10 questions every founder should be able to answer.")
+
+    with st.expander("Edit the questions", expanded=False):
+        st.write("Current list:")
+        for i, q in enumerate(TEN_QUESTIONS, 1):
+            st.write(f"{i}. {q}")
+        st.caption("To change these, edit TEN_QUESTIONS in atlas_app.py.")
+
+    if st.button("Get Atlas's Answers", type="primary"):
+        if client is None:
+            st.error("Enter a valid Anthropic API key in the sidebar first.")
+            return
+        with st.spinner("Thinking through today..."):
+            system = (
+                "You are Atlas, the AI Operating System for Dolce Mondo. Never hallucinate "
+                "facts about the business — use only the business context and finance "
+                "snapshot provided. Where the answer depends on facts not in your context, "
+                "say so plainly instead of guessing. Default to brutal honesty and execution "
+                "focus, consistent with how Atlas is meant to operate.\n\n"
+                "Respond ONLY with valid JSON, no markdown code fences, no commentary "
+                "before or after — just the raw JSON object, matching exactly this shape:\n\n"
+                "{\n"
+                '  "answers": [\n'
+                "    {\n"
+                '      "question": "<the exact question text as given>",\n'
+                '      "status": "good" | "caution" | "concern" | "unknown",\n'
+                '      "verdict": "<one short punchy phrase, 3-8 words>",\n'
+                '      "detail": "<2-4 sentences of grounded explanation>"\n'
+                "    }\n"
+                "    ... one object per question, in the same order given\n"
+                "  ]\n"
+                "}\n\n"
+                "status meanings: 'good' = healthy/on track, 'caution' = watch this, "
+                "'concern' = needs attention now, 'unknown' = no data exists to answer this "
+                "yet (use this honestly rather than guessing a status)."
+            )
+            questions_block = "\n".join(f"{i}. {q}" for i, q in enumerate(TEN_QUESTIONS, 1))
+            user_msg = (
+                f"BUSINESS CONTEXT:\n{kb_context()}\n\n"
+                f"FINANCE SNAPSHOT:\n{finance_snapshot_str(data)}\n\n"
+                f"QUESTIONS:\n{questions_block}"
+            )
+            result = ask_claude_json(client, system, user_msg, max_tokens=3000)
+            if result:
+                st.session_state.last_ten_questions = result
+                for k in list(st.session_state.keys()):
+                    if k.startswith("tq_expand_"):
+                        del st.session_state[k]
+
+    if st.session_state.get("last_ten_questions"):
+        render_ten_questions(st.session_state.last_ten_questions)
+
+
+def render_ten_questions(result: dict) -> None:
+    st.markdown("<br>", unsafe_allow_html=True)
+    answers = result.get("answers", [])
+    for i, a in enumerate(answers):
+        style = STATUS_STYLE.get(a.get("status", "unknown"), STATUS_STYLE["unknown"])
+        expand_key = f"tq_expand_{i}"
+        if expand_key not in st.session_state:
+            st.session_state[expand_key] = False
+        expanded = st.session_state[expand_key]
+
+        detail_html = (
+            f"<div style='margin-top:10px;padding-top:10px;border-top:1px solid rgba(0,0,0,0.08);"
+            f"color:#444'>{_esc(a.get('detail', ''))}</div>"
+            if expanded else ""
+        )
+        st.markdown(
+            f"<div style='background:{style['bg']};border-left:5px solid {style['color']};"
+            f"border-radius:6px;padding:12px 16px 8px 16px;margin-bottom:4px'>"
+            f"<div style='display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap'>"
+            f"<div style='font-weight:700'>{style['icon']} {_esc(a.get('question', ''))}</div>"
+            f"<div style='font-weight:700;color:{style['color']}'>{_esc(a.get('verdict', ''))}</div>"
+            f"</div>"
+            f"{detail_html}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        _, btn_col = st.columns([5, 1])
+        with btn_col:
+            btn_label = "Show Less ▴" if expanded else "Read More ▾"
+            if st.button(btn_label, key=f"tq_btn_{i}", use_container_width=True):
+                st.session_state[expand_key] = not expanded
+                st.rerun()
+        st.markdown("<div style='margin-bottom:8px'></div>", unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────
+# PAGE: Decisions Log
+# ─────────────────────────────────────────────────────────────
+
+def page_decisions_log(data: dict):
+    st.header("Decisions Log")
+    st.caption("Executive Memory: log the decision, then come back later and close the loop on what actually happened.")
+
+    with st.form("new_decision", clear_on_submit=True):
+        st.subheader("Log a new decision")
+        decision = st.text_area("Decision", placeholder="What was decided?")
+        why = st.text_area("Why", placeholder="Rationale — why this decision, why now?")
+        who = st.text_input("Who", value="Founder")
+        expected_outcome = st.text_area("Expected Outcome", placeholder="What do you expect to happen as a result?")
+        submitted = st.form_submit_button("Save Decision")
+        if submitted and decision.strip():
+            data["decisions"].append({
+                "id": datetime.now().strftime("%Y%m%d%H%M%S%f"),
+                "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "decision": decision.strip(),
+                "why": why.strip(),
+                "who": who.strip() or "Founder",
+                "expected_outcome": expected_outcome.strip(),
+                "actual_outcome": "TBD",
+                "status": "Open",
+            })
+            save_data(data)
+            st.success("Decision logged.")
+
+    st.divider()
+
+    if not data["decisions"]:
+        st.info("No decisions logged yet.")
+        return
+
+    open_decisions = [d for d in data["decisions"] if d.get("status", "Open") == "Open"]
+    closed_decisions = [d for d in data["decisions"] if d.get("status", "Open") == "Closed"]
+
+    st.subheader(f"Open Decisions ({len(open_decisions)})")
+    st.caption("Come back and close these once you know what actually happened.")
+    for entry in reversed(open_decisions):
+        _render_decision(data, entry)
+
+    if closed_decisions:
+        st.divider()
+        st.subheader(f"Closed Decisions ({len(closed_decisions)})")
+        for entry in reversed(closed_decisions):
+            _render_decision(data, entry)
+
+
+def _render_decision(data: dict, entry: dict) -> None:
+    """Renders a single decision entry with an inline form to close the loop
+    (record the actual outcome and mark it resolved)."""
+    is_closed = entry.get("status") == "Closed"
+    color = "#27ae60" if is_closed else "#f39c12"
+    icon = "🟢" if is_closed else "🟡"
+
+    with st.expander(f"{icon} {entry['date']} — {entry['decision'][:70]}"):
+        rows = f"""
+        <div style='background:#f8f9fa;border-left:5px solid {color};border-radius:6px;padding:14px 16px'>
+            <div style='font-weight:700;margin-bottom:8px'>{_esc(entry['decision'])}</div>
+            {f"<div style='margin-bottom:6px'><span style='color:#888'>Why:</span> {_esc(entry['why'])}</div>" if entry.get('why') else ''}
+            <div style='margin-bottom:6px'><span style='color:#888'>Who:</span> {_esc(entry.get('who', 'Founder'))}</div>
+            {f"<div style='margin-bottom:6px'><span style='color:#888'>Expected Outcome:</span> {_esc(entry['expected_outcome'])}</div>" if entry.get('expected_outcome') else ''}
+            <div style='margin-bottom:6px'><span style='color:#888'>Actual Outcome:</span> {_esc(entry.get('actual_outcome', 'TBD'))}</div>
+            <div style='display:inline-block;margin-top:4px;padding:3px 10px;border-radius:12px;
+                background:{color};color:white;font-size:12px;font-weight:700'>{entry.get('status', 'Open').upper()}</div>
+        </div>
+        """
+        st.markdown(_compact_html(rows), unsafe_allow_html=True)
+
+        if not is_closed:
+            st.markdown("<br>", unsafe_allow_html=True)
+            with st.form(f"close_{entry['id']}"):
+                actual = st.text_area(
+                    "Record what actually happened",
+                    key=f"actual_{entry['id']}",
+                    placeholder="What was the real outcome?",
+                )
+                mark_closed = st.form_submit_button("Save Outcome & Close")
+                if mark_closed and actual.strip():
+                    for d in data["decisions"]:
+                        if d["id"] == entry["id"]:
+                            d["actual_outcome"] = actual.strip()
+                            d["status"] = "Closed"
+                    save_data(data)
+                    st.success("Outcome recorded. Decision closed.")
+                    st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────
+# PAGE: Chat with Atlas
+# ─────────────────────────────────────────────────────────────
+
+ASSISTANT_AVATAR = "🧭"
+USER_AVATAR = "🧑‍💼"
+
+QUICK_PROMPTS = [
+    "What's my cash runway right now?",
+    "What's blocking the H-E-B reopening?",
+    "What decisions do I still need to close?",
+]
+
+
+def page_chat(data: dict, client):
+    st.header("Chat with Atlas")
+    st.caption("Grounded in your knowledge base and current finance data — ask anything about the business.")
+
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    pending_prompt = None
+
+    with st.container(border=True):
+        if not st.session_state.chat_history:
+            st.markdown(
+                "<div style='text-align:center;padding:24px 12px;color:#888'>"
+                f"<div style='font-size:32px'>{ASSISTANT_AVATAR}</div>"
+                "<div style='margin-top:8px'>Ask Atlas anything, or try one of these:</div>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            cols = st.columns(len(QUICK_PROMPTS))
+            for col, qp in zip(cols, QUICK_PROMPTS):
+                with col:
+                    if st.button(qp, use_container_width=True, key=f"quick_{qp}"):
+                        pending_prompt = qp
+        else:
+            for msg in st.session_state.chat_history:
+                avatar = ASSISTANT_AVATAR if msg["role"] == "assistant" else USER_AVATAR
+                with st.chat_message(msg["role"], avatar=avatar):
+                    safe_markdown(msg["content"])
+                    if msg["role"] == "assistant":
+                        speak_button(msg["content"], label="🔊 Read Aloud")
+
+    typed_prompt = st.chat_input("Ask Atlas anything about the business...")
+
+    voice_prompt = None
+    if VOICE_AVAILABLE:
+        vc1, vc2 = st.columns([1, 5])
+        with vc1:
+            voice_prompt = speech_to_text(
+                language="en",
+                start_prompt="🎤 Speak",
+                stop_prompt="⏹ Stop",
+                just_once=True,
+                use_container_width=True,
+                key="atlas_voice_input",
+            )
+        with vc2:
+            st.caption("Or click 🎤 and ask your question out loud.")
+    else:
+        st.caption("Voice input not available — the streamlit-mic-recorder package isn't installed.")
+
+    prompt = pending_prompt or typed_prompt or voice_prompt
+
+    if prompt:
+        if client is None:
+            st.error("Enter a valid Anthropic API key in the sidebar first.")
+            return
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
+
+        system = (
+            "You are Atlas, the AI operating system for Dolce Mondo, a Houston-based "
+            "coffee, beverage, and sweets brand run solo by its founder. Be direct "
+            "and concrete. Ground answers in the business context and finance "
+            "snapshot provided; say clearly when something isn't covered by them."
+        )
+        user_msg = (
+            f"BUSINESS CONTEXT:\n{kb_context()}\n\n"
+            f"FINANCE SNAPSHOT:\n{finance_snapshot_str(data)}\n\n"
+            f"QUESTION:\n{prompt}"
+        )
+        with st.spinner("Thinking..."):
+            reply = ask_claude(client, system, user_msg)
+        if reply:
+            st.session_state.chat_history.append({"role": "assistant", "content": reply})
+        st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────────────────────
+
+def render_backup_restore(data: dict) -> None:
+    """Streamlit Cloud's disk isn't guaranteed to survive redeploys/reboots, so
+    this gives the founder a manual, reliable way to save and restore all
+    Atlas data (finance, decisions, everything in atlas_data.json) independent
+    of the app's own storage."""
+    st.header("💾 Backup & Restore")
+
+    backup_json = json.dumps(data, indent=2)
+    st.download_button(
+        "⬇️ Download Backup",
+        data=backup_json,
+        file_name=f"atlas_backup_{datetime.now().strftime('%Y-%m-%d')}.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+    st.caption("Do this regularly — especially after logging decisions or updating finance numbers.")
+
+    with st.expander("Restore from a backup file"):
+        st.caption("⚠️ This will overwrite all current data (finance, decisions, everything) with the uploaded backup.")
+        uploaded = st.file_uploader("Choose a backup .json file", type=["json"], key="restore_uploader")
+        if uploaded is not None:
+            try:
+                restored = json.load(uploaded)
+                if not isinstance(restored, dict) or "cash" not in restored:
+                    st.error("This doesn't look like a valid Atlas backup file.")
+                else:
+                    if st.button("Confirm Restore (overwrites current data)", type="primary"):
+                        for k, v in DEFAULT_DATA.items():
+                            restored.setdefault(k, v)
+                        st.session_state.data = restored
+                        save_data(restored)
+                        st.success("Restored successfully.")
+                        st.rerun()
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                st.error("Couldn't read that file — make sure it's a valid Atlas backup .json.")
+
+
+def main():
+    st.set_page_config(page_title=f"{APP_TITLE} — Dolce Mondo", layout="centered")
+
+    if not check_password():
+        return
+
+    if "data" not in st.session_state:
+        st.session_state.data = load_data()
+    data = st.session_state.data
+
+    st.title(APP_TITLE)
+    st.markdown(f"**{APP_SUBTITLE}**")
+
+    with st.sidebar:
+        if st.button("🔒 Lock Atlas"):
+            st.session_state.authenticated = False
+            st.rerun()
+
+        st.header("Atlas Status")
+        secret_key_set = bool(st.secrets.get("ANTHROPIC_API_KEY", ""))
+        if secret_key_set:
+            st.caption("🔑 Anthropic API key loaded from Secrets — no need to paste it here.")
+        else:
+            api_key = st.text_input("Anthropic API Key (sk-ant-...)", type="password",
+                                     value=st.session_state.get("api_key", ""))
+            st.session_state.api_key = api_key
+        client = get_client()
+        st.write("🔑 API key:", "✅ connected" if client else "❌ not set")
+
+        kb = load_knowledge_base()
+        st.write("📚 Knowledge base:", f"✅ {len(kb)} files" if kb else "❌ none found")
+        if not kb:
+            st.caption(f"Drop your .md files into: `{KB_DIR}`")
+
+        st.write("💾 Data file:", "✅ found" if DATA_FILE.exists() else "ℹ️ will be created on first save")
+
+        square_connected = bool(
+            (st.secrets.get("SQUARE_ACCESS_TOKEN", "") and st.secrets.get("SQUARE_LOCATION_ID", ""))
+            or (st.session_state.get("square_token") and st.session_state.get("square_location"))
+        )
+        st.write("🟧 Square API:", "✅ configured" if square_connected else "ℹ️ not set (optional)")
+
+        st.divider()
+        render_backup_restore(data)
+
+        st.divider()
+        st.header("Navigation")
+        page = st.radio(
+            "Go to",
+            ["Morning Brief", "Finance Data", "Square Data", "Vital Signs",
+             "Decisions Log", "Chat with Atlas"],
+            label_visibility="collapsed",
+        )
+
+    if page == "Morning Brief":
+        page_morning_brief(data, client)
+    elif page == "Finance Data":
+        page_finance_data(data)
+    elif page == "Square Data":
+        page_square_data(data)
+    elif page == "Vital Signs":
+        page_ten_questions(data, client)
+    elif page == "Decisions Log":
+        page_decisions_log(data)
+    elif page == "Chat with Atlas":
+        page_chat(data, client)
+
+    st.caption("Atlas — production MVP")
+
+
+if __name__ == "__main__":
+    main()
