@@ -59,7 +59,7 @@ Self-serve signup, billing, predictive/agent features, franchise/multi-location 
 **Medium-Term**
 - Full Square API (and possibly bank) integration for automatic sales/cash data
 - Additional modules: full Operations status, Marketing performance
-- Voice capability: voice-in **shipped 2026-07-15** on the Chat with Atlas page (browser-based speech-to-text via streamlit-mic-recorder, free — no paid transcription API). Voice-out (Atlas reads responses aloud) still pending — separate layer, not yet built.
+- Voice capability: voice-in **shipped 2026-07-15** on the Chat with Atlas page (browser-based speech-to-text via streamlit-mic-recorder, free — no paid transcription API). Voice-out **shipped 2026-07-15** — "Read Aloud" buttons on Morning Brief and Chat, using free browser speech synthesis, no paid TTS API.
 - Risk and Opportunity prediction based on real historical data (not before there's real historical data to learn from)
 - Exportable reports for accountant/investor raise
 - Multi-user support for future hires (COO, baking chef, sales director)
