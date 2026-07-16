@@ -278,6 +278,50 @@ def check_password() -> bool:
     return False
 
 
+def speak_button(text: str, label: str = "🔊 Read Aloud") -> None:
+    """Renders a button that reads the given text aloud using the browser's
+    built-in speech synthesis — free, no API call, works in Chrome/Edge/Safari.
+    Uses a raw HTML button (not st.button) so the click is handled entirely in
+    the browser without triggering a Streamlit rerun."""
+    if not text:
+        return
+    safe_text = json.dumps(text)
+    st.markdown(
+        f"""<button onclick='window.speechSynthesis.cancel();
+        var u = new SpeechSynthesisUtterance({safe_text});
+        window.speechSynthesis.speak(u);'
+        style='background:#2c3e50;color:white;border:none;border-radius:6px;
+        padding:8px 16px;cursor:pointer;font-size:14px;margin:4px 0'>{label}</button>""",
+        unsafe_allow_html=True,
+    )
+
+
+def stop_speaking_button() -> None:
+    st.markdown(
+        """<button onclick='window.speechSynthesis.cancel();'
+        style='background:#95a5a6;color:white;border:none;border-radius:6px;
+        padding:8px 16px;cursor:pointer;font-size:14px;margin:4px 0'>⏹ Stop</button>""",
+        unsafe_allow_html=True,
+    )
+
+
+def brief_narration(brief: dict) -> str:
+    """Builds a short spoken-friendly summary of the Morning Brief — the full
+    JSON read aloud verbatim would be tedious, so this narrates the key points."""
+    overall = brief.get("overall_score")
+    momentum = brief.get("momentum", "unknown")
+    runway = brief.get("cash_runway_days")
+    parts = [
+        f"Good morning. Your overall business score is {overall if overall is not None else 'not yet available'} out of 100.",
+        f"Momentum is {momentum}.",
+        f"Cash runway is {runway} days." if runway is not None else "Cash runway is unknown.",
+        f"Today's biggest opportunity: {brief.get('biggest_opportunity', '')}",
+        f"Biggest risk: {brief.get('biggest_risk', '')}",
+        f"Recommended focus: {brief.get('recommended_focus', '')}",
+    ]
+    return " ".join(p for p in parts if p)
+
+
 def safe_markdown(text: str) -> None:
     """st.markdown treats text between two $ signs as LaTeX math, which garbles
     dollar amounts (e.g. "$70K...$11.6K" gets rendered as an equation). Escaping
@@ -395,6 +439,11 @@ def page_morning_brief(data: dict, client):
 
 def render_morning_brief(brief: dict) -> None:
     st.markdown("### Atlas Morning Brief")
+    sc1, sc2 = st.columns([1, 1])
+    with sc1:
+        speak_button(brief_narration(brief), label="🔊 Read Summary Aloud")
+    with sc2:
+        stop_speaking_button()
 
     # ── Top row: Overall score, Momentum, Cash Runway ──────────────────
     overall = brief.get("overall_score")
@@ -801,19 +850,26 @@ def page_decisions_log(data: dict):
 def _render_decision(data: dict, entry: dict) -> None:
     """Renders a single decision entry with an inline form to close the loop
     (record the actual outcome and mark it resolved)."""
-    status_icon = "🟢" if entry.get("status") == "Closed" else "🟡"
-    with st.expander(f"{status_icon} {entry['date']} — {entry['decision'][:70]}"):
-        st.markdown(f"**Decision:** {entry['decision']}")
-        if entry.get("why"):
-            st.markdown(f"**Why:** {entry['why']}")
-        st.markdown(f"**Who:** {entry.get('who', 'Founder')}")
-        if entry.get("expected_outcome"):
-            st.markdown(f"**Expected Outcome:** {entry['expected_outcome']}")
-        st.markdown(f"**Actual Outcome:** {entry.get('actual_outcome', 'TBD')}")
-        st.markdown(f"**Status:** {entry.get('status', 'Open')}")
+    is_closed = entry.get("status") == "Closed"
+    color = "#27ae60" if is_closed else "#f39c12"
+    icon = "🟢" if is_closed else "🟡"
 
-        if entry.get("status") != "Closed":
-            st.markdown("---")
+    with st.expander(f"{icon} {entry['date']} — {entry['decision'][:70]}"):
+        rows = f"""
+        <div style='background:#f8f9fa;border-left:5px solid {color};border-radius:6px;padding:14px 16px'>
+            <div style='font-weight:700;margin-bottom:8px'>{_esc(entry['decision'])}</div>
+            {f"<div style='margin-bottom:6px'><span style='color:#888'>Why:</span> {_esc(entry['why'])}</div>" if entry.get('why') else ''}
+            <div style='margin-bottom:6px'><span style='color:#888'>Who:</span> {_esc(entry.get('who', 'Founder'))}</div>
+            {f"<div style='margin-bottom:6px'><span style='color:#888'>Expected Outcome:</span> {_esc(entry['expected_outcome'])}</div>" if entry.get('expected_outcome') else ''}
+            <div style='margin-bottom:6px'><span style='color:#888'>Actual Outcome:</span> {_esc(entry.get('actual_outcome', 'TBD'))}</div>
+            <div style='display:inline-block;margin-top:4px;padding:3px 10px;border-radius:12px;
+                background:{color};color:white;font-size:12px;font-weight:700'>{entry.get('status', 'Open').upper()}</div>
+        </div>
+        """
+        st.markdown(rows, unsafe_allow_html=True)
+
+        if not is_closed:
+            st.markdown("<br>", unsafe_allow_html=True)
             with st.form(f"close_{entry['id']}"):
                 actual = st.text_area(
                     "Record what actually happened",
@@ -873,6 +929,8 @@ def page_chat(data: dict, client):
                 avatar = ASSISTANT_AVATAR if msg["role"] == "assistant" else USER_AVATAR
                 with st.chat_message(msg["role"], avatar=avatar):
                     safe_markdown(msg["content"])
+                    if msg["role"] == "assistant":
+                        speak_button(msg["content"], label="🔊 Read Aloud")
 
     typed_prompt = st.chat_input("Ask Atlas anything about the business...")
 
