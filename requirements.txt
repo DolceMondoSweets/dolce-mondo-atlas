@@ -3,3 +3,4 @@ anthropic>=0.40
 pandas>=2.0
 requests>=2.31
 altair>=5.0
+streamlit-mic-recorder>=0.0.8
