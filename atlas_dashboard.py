@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import anthropic
 
@@ -281,27 +282,29 @@ def check_password() -> bool:
 def speak_button(text: str, label: str = "🔊 Read Aloud") -> None:
     """Renders a button that reads the given text aloud using the browser's
     built-in speech synthesis — free, no API call, works in Chrome/Edge/Safari.
-    Uses a raw HTML button (not st.button) so the click is handled entirely in
-    the browser without triggering a Streamlit rerun."""
+    Uses st.components.v1.html (not st.markdown) because Streamlit strips
+    onclick/JS from st.markdown even with unsafe_allow_html=True — components.html
+    is the actual supported way to run real interactive JS in Streamlit."""
     if not text:
         return
-    # Encode as JSON for JS, then neutralize literal $ characters so Streamlit's
-    # markdown parser can't mistake them for LaTeX math delimiters mid-attribute.
-    # \u0024 is interpreted by JS as "$" at runtime, so the spoken text is unaffected.
-    safe_text = json.dumps(text).replace("$", "\\u0024")
-    html = f"""<button onclick='window.speechSynthesis.cancel();
+    safe_text = json.dumps(text)
+    html = f"""
+    <button onclick='window.speechSynthesis.cancel();
         var u = new SpeechSynthesisUtterance({safe_text});
         window.speechSynthesis.speak(u);'
         style='background:#2c3e50;color:white;border:none;border-radius:6px;
-        padding:8px 16px;cursor:pointer;font-size:14px;margin:4px 0'>{label}</button>"""
-    st.markdown(_compact_html(html), unsafe_allow_html=True)
+        padding:8px 16px;cursor:pointer;font-size:14px;font-family:sans-serif;'>{label}</button>
+    """
+    components.html(html, height=45)
 
 
 def stop_speaking_button() -> None:
-    html = """<button onclick='window.speechSynthesis.cancel();'
+    html = """
+    <button onclick='window.speechSynthesis.cancel();'
         style='background:#95a5a6;color:white;border:none;border-radius:6px;
-        padding:8px 16px;cursor:pointer;font-size:14px;margin:4px 0'>⏹ Stop</button>"""
-    st.markdown(_compact_html(html), unsafe_allow_html=True)
+        padding:8px 16px;cursor:pointer;font-size:14px;font-family:sans-serif;'>⏹ Stop</button>
+    """
+    components.html(html, height=45)
 
 
 def brief_narration(brief: dict) -> str:
